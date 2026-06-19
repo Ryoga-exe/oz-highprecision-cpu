@@ -50,6 +50,10 @@ producing a wrong result.
 `0` selects an automatic thread count for medium and larger outputs, while `1`
 forces serial reconstruction.
 
+`Options::residue_col_block` controls the output-column block size used while
+building residue GEMM outputs and reconstructing CRT results. The default `0`
+uses an automatic block size.
+
 ## Why this differs from `oz-cpu`
 
 `oz-cpu` mirrors the INT8-moduli flow used by GEMMul8. This PoC instead chooses
@@ -84,9 +88,9 @@ make -C oz-highprecision-cpu test BLAS_LIBS="-lblas"
 
 The benchmark target runs `build/benchmark --quick` and prints CSV columns for
 FP64 BLAS time, one-shot modular/CRT time, plan construction time, reusable-plan
-execution time, serial reusable-plan execution time, optional naive Boost
-multiprecision time, and maximum absolute differences. Run the default
-benchmark set with:
+execution time, serial reusable-plan execution time, residue column block size,
+optional naive Boost multiprecision time, and maximum absolute differences. Run
+the default benchmark set with:
 
 ```sh
 make -C oz-highprecision-cpu build/benchmark
@@ -111,9 +115,11 @@ path reconstructs the exact `double` input result `1`.
 ## Scope and limitations
 
 This is a correctness-oriented PoC, not a tuned implementation. It currently
-rebuilds residue matrices for each modulus and performs scalar CRT recovery per
-output element, though CRT recovery is parallelized over output entries for
-larger outputs. It does reuse per-call input decompositions across moduli and
-caches power-of-two residues in reusable plans. Obvious next steps are residue
-blocking, richer plan reuse for repeated compatible inputs, and CPU
-matrix-extension backends such as AMX/VNNI for smaller residues.
+rebuilds residue matrices for each modulus and performs scalar CRT recovery
+within each output element, though residue GEMM/CRT now run over output-column
+blocks and CRT recovery is parallelized over output entries for larger blocks.
+It does reuse per-call input decompositions across moduli and caches
+power-of-two residues in reusable plans. Obvious next steps are caching A-side
+residue panels across column blocks, richer plan reuse for repeated compatible
+inputs, and CPU matrix-extension backends such as AMX/VNNI for smaller
+residues.

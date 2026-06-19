@@ -43,6 +43,8 @@ struct Options {
     int max_moduli = 256;
     // 0 selects an automatic thread count; 1 forces serial CRT recovery.
     int crt_threads = 0;
+    // 0 selects an automatic column block size for residue GEMM/CRT.
+    int residue_col_block = 0;
 };
 
 struct Plan {
@@ -69,6 +71,7 @@ struct GemmPlan {
     int max_pow2_shift = 0;
     std::vector<std::vector<int>> pow2_residues;
     int crt_threads = 0;
+    int residue_col_block = 0;
 };
 
 namespace detail {
@@ -99,6 +102,9 @@ inline void validate_options(const Options &options) {
     }
     if (options.crt_threads < 0) {
         throw std::invalid_argument("crt_threads must be >= 0");
+    }
+    if (options.residue_col_block < 0) {
+        throw std::invalid_argument("residue_col_block must be >= 0");
     }
 }
 
@@ -589,6 +595,9 @@ inline void validate_gemm_plan(const GemmPlan &plan,
     if (plan.crt_threads < 0) {
         throw std::invalid_argument("GemmPlan has invalid CRT thread count");
     }
+    if (plan.residue_col_block < 0) {
+        throw std::invalid_argument("GemmPlan has invalid residue column block size");
+    }
     for (const std::vector<int> &table : plan.pow2_residues) {
         if (table.size() != static_cast<std::size_t>(plan.max_pow2_shift) + 1) {
             throw std::invalid_argument("GemmPlan has invalid pow2 residue table size");
@@ -609,6 +618,16 @@ inline int choose_crt_threads(std::size_t output_size, int requested_threads) {
     threads = std::max(1, threads);
     threads = std::min<std::size_t>(static_cast<std::size_t>(threads), output_size);
     return threads;
+}
+
+inline int choose_residue_col_block(int n, int requested_block) {
+    if (n <= 0) {
+        return 0;
+    }
+    if (requested_block > 0) {
+        return std::min(n, requested_block);
+    }
+    return std::min(n, 128);
 }
 
 template <typename HighPrec>
@@ -653,6 +672,7 @@ inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
     plan.n = n;
     plan.k = k;
     plan.crt_threads = options.crt_threads;
+    plan.residue_col_block = options.residue_col_block;
     plan.row_scale_exp.resize(static_cast<std::size_t>(m));
     plan.col_scale_exp.resize(static_cast<std::size_t>(n));
     plan.row_max_scaled_bits.resize(static_cast<std::size_t>(m));
@@ -686,8 +706,13 @@ inline Plan make_plan(Operation op_a, Operation op_b,
 }
 
 inline int effective_crt_threads(const GemmPlan &plan) {
-    return detail::choose_crt_threads(static_cast<std::size_t>(plan.m) * plan.n,
+    const int col_block = detail::choose_residue_col_block(plan.n, plan.residue_col_block);
+    return detail::choose_crt_threads(static_cast<std::size_t>(plan.m) * col_block,
                                       plan.crt_threads);
+}
+
+inline int effective_residue_col_block(const GemmPlan &plan) {
+    return detail::choose_residue_col_block(plan.n, plan.residue_col_block);
 }
 
 template <typename HighPrec>
@@ -724,12 +749,13 @@ inline void gemm_with_plan(const GemmPlan &plan,
         return;
     }
 
+    const int residue_col_block =
+        detail::choose_residue_col_block(n, plan.residue_col_block);
     std::vector<double> a_mod(static_cast<std::size_t>(m) * k);
-    std::vector<double> b_mod(static_cast<std::size_t>(k) * n);
-    std::vector<double> c_mod(static_cast<std::size_t>(m) * n);
+    std::vector<double> b_mod(static_cast<std::size_t>(k) * residue_col_block);
+    std::vector<double> c_mod(static_cast<std::size_t>(m) * residue_col_block);
     std::vector<detail::ScaledDouble> a_scaled(static_cast<std::size_t>(m) * k);
     std::vector<detail::ScaledDouble> b_scaled(static_cast<std::size_t>(k) * n);
-    std::vector<int> all_residues(plan.crt.moduli.size() * static_cast<std::size_t>(m) * n);
 
     for (int col = 0; col < k; ++col) {
         for (int row = 0; row < m; ++row) {
@@ -749,85 +775,99 @@ inline void gemm_with_plan(const GemmPlan &plan,
         }
     }
 
-    for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
-        const int p = plan.crt.moduli[imod];
-        const std::vector<int> &pow2_mod = plan.pow2_residues[imod];
+    std::vector<int> all_residues(plan.crt.moduli.size() *
+                                  static_cast<std::size_t>(m) * residue_col_block);
+    for (int col_begin = 0; col_begin < n; col_begin += residue_col_block) {
+        const int nb = std::min(residue_col_block, n - col_begin);
+        const std::size_t block_output_size = static_cast<std::size_t>(m) * nb;
 
-        for (int col = 0; col < k; ++col) {
-            for (int row = 0; row < m; ++row) {
-                a_mod[row + col * m] = static_cast<double>(
-                    detail::scaled_parts_centered_mod(
-                        a_scaled[row + col * m].parts,
-                        a_scaled[row + col * m].shift,
-                        p,
-                        pow2_mod));
+        for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
+            const int p = plan.crt.moduli[imod];
+            const std::vector<int> &pow2_mod = plan.pow2_residues[imod];
+
+            for (int col = 0; col < k; ++col) {
+                for (int row = 0; row < m; ++row) {
+                    a_mod[row + col * m] = static_cast<double>(
+                        detail::scaled_parts_centered_mod(
+                            a_scaled[row + col * m].parts,
+                            a_scaled[row + col * m].shift,
+                            p,
+                            pow2_mod));
+                }
+            }
+
+            for (int local_col = 0; local_col < nb; ++local_col) {
+                const int global_col = col_begin + local_col;
+                for (int row = 0; row < k; ++row) {
+                    b_mod[row + local_col * k] = static_cast<double>(
+                        detail::scaled_parts_centered_mod(
+                            b_scaled[row + global_col * k].parts,
+                            b_scaled[row + global_col * k].shift,
+                            p,
+                            pow2_mod));
+                }
+            }
+
+            detail::blas_dgemm_nn(m, nb, k,
+                                  a_mod.data(), m,
+                                  b_mod.data(), k,
+                                  c_mod.data(), m);
+
+            for (int local_col = 0; local_col < nb; ++local_col) {
+                for (int row = 0; row < m; ++row) {
+                    const std::size_t idx =
+                        static_cast<std::size_t>(row) +
+                        static_cast<std::size_t>(local_col) * m;
+                    const auto rounded = static_cast<std::int64_t>(std::llround(c_mod[idx]));
+                    all_residues[imod * block_output_size + idx] =
+                        detail::centered_mod_i64(rounded, p);
+                }
             }
         }
 
-        for (int col = 0; col < n; ++col) {
-            for (int row = 0; row < k; ++row) {
-                b_mod[row + col * k] = static_cast<double>(
-                    detail::scaled_parts_centered_mod(
-                        b_scaled[row + col * k].parts,
-                        b_scaled[row + col * k].shift,
-                        p,
-                        pow2_mod));
+        const int crt_threads =
+            detail::choose_crt_threads(block_output_size, plan.crt_threads);
+        auto reconstruct_range = [&](std::size_t begin, std::size_t end) {
+            std::vector<int> thread_residues(plan.crt.moduli.size());
+            for (std::size_t idx = begin; idx < end; ++idx) {
+                const int row = static_cast<int>(idx % static_cast<std::size_t>(m));
+                const int local_col = static_cast<int>(idx / static_cast<std::size_t>(m));
+                const int global_col = col_begin + local_col;
+                for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
+                    thread_residues[imod] = all_residues[imod * block_output_size + idx];
+                }
+
+                const detail::cpp_int crt =
+                    detail::reconstruct_crt_centered(thread_residues, plan.crt);
+                const int restore_exp =
+                    -(plan.row_scale_exp[row] + plan.col_scale_exp[global_col]);
+                const HighPrec ab = detail::scale_cpp_int_pow2<HighPrec>(crt, restore_exp);
+                const std::size_t out_idx =
+                    static_cast<std::size_t>(row) +
+                    static_cast<std::size_t>(global_col) * ldc;
+                c[out_idx] = alpha * ab + beta * c[out_idx];
             }
-        }
+        };
 
-        detail::blas_dgemm_nn(m, n, k,
-                              a_mod.data(), m,
-                              b_mod.data(), k,
-                              c_mod.data(), m);
-
-        for (int col = 0; col < n; ++col) {
-            for (int row = 0; row < m; ++row) {
-                const std::size_t idx =
-                    static_cast<std::size_t>(row) + static_cast<std::size_t>(col) * m;
-                const auto rounded = static_cast<std::int64_t>(std::llround(c_mod[idx]));
-                all_residues[imod * static_cast<std::size_t>(m) * n + idx] =
-                    detail::centered_mod_i64(rounded, p);
+        if (crt_threads == 1) {
+            reconstruct_range(0, block_output_size);
+        } else {
+            std::vector<std::thread> workers;
+            workers.reserve(static_cast<std::size_t>(crt_threads - 1));
+            for (int tid = 1; tid < crt_threads; ++tid) {
+                const std::size_t begin = block_output_size * static_cast<std::size_t>(tid) /
+                                          static_cast<std::size_t>(crt_threads);
+                const std::size_t end =
+                    block_output_size * static_cast<std::size_t>(tid + 1) /
+                    static_cast<std::size_t>(crt_threads);
+                workers.emplace_back(reconstruct_range, begin, end);
             }
-        }
-    }
-
-    const std::size_t output_size = static_cast<std::size_t>(m) * n;
-    const int crt_threads = detail::choose_crt_threads(output_size, plan.crt_threads);
-    auto reconstruct_range = [&](std::size_t begin, std::size_t end) {
-        std::vector<int> thread_residues(plan.crt.moduli.size());
-        for (std::size_t idx = begin; idx < end; ++idx) {
-            const int row = static_cast<int>(idx % static_cast<std::size_t>(m));
-            const int col = static_cast<int>(idx / static_cast<std::size_t>(m));
-            for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
-                thread_residues[imod] = all_residues[imod * output_size + idx];
+            const std::size_t first_end =
+                block_output_size / static_cast<std::size_t>(crt_threads);
+            reconstruct_range(0, first_end);
+            for (std::thread &worker : workers) {
+                worker.join();
             }
-
-            const detail::cpp_int crt =
-                detail::reconstruct_crt_centered(thread_residues, plan.crt);
-            const int restore_exp = -(plan.row_scale_exp[row] + plan.col_scale_exp[col]);
-            const HighPrec ab = detail::scale_cpp_int_pow2<HighPrec>(crt, restore_exp);
-            const std::size_t out_idx =
-                static_cast<std::size_t>(row) + static_cast<std::size_t>(col) * ldc;
-            c[out_idx] = alpha * ab + beta * c[out_idx];
-        }
-    };
-
-    if (crt_threads == 1) {
-        reconstruct_range(0, output_size);
-    } else {
-        std::vector<std::thread> workers;
-        workers.reserve(static_cast<std::size_t>(crt_threads - 1));
-        for (int tid = 1; tid < crt_threads; ++tid) {
-            const std::size_t begin = output_size * static_cast<std::size_t>(tid) /
-                                      static_cast<std::size_t>(crt_threads);
-            const std::size_t end = output_size * static_cast<std::size_t>(tid + 1) /
-                                    static_cast<std::size_t>(crt_threads);
-            workers.emplace_back(reconstruct_range, begin, end);
-        }
-        const std::size_t first_end = output_size / static_cast<std::size_t>(crt_threads);
-        reconstruct_range(0, first_end);
-        for (std::thread &worker : workers) {
-            worker.join();
         }
     }
 }

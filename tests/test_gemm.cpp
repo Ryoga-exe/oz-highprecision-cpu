@@ -289,6 +289,45 @@ void run_parallel_crt_case(std::mt19937_64 &rng) {
     check_close("parallel crt", c, cref, m, n, ldc);
 }
 
+void run_blocked_residue_case(std::mt19937_64 &rng) {
+    constexpr int m = 7;
+    constexpr int n = 5;
+    constexpr int k = 6;
+    constexpr int lda = m;
+    constexpr int ldb = k;
+    constexpr int ldc = m;
+
+    std::vector<double> a = random_matrix(m, k, lda, rng);
+    std::vector<double> b = random_matrix(k, n, ldb, rng);
+    std::vector<hp_t> c(static_cast<std::size_t>(ldc) * n, hp_t(0));
+    std::vector<hp_t> cref = c;
+
+    oz_hp_cpu::Options options;
+    options.residue_col_block = 2;
+    const oz_hp_cpu::GemmPlan plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb,
+                                  options);
+    if (oz_hp_cpu::effective_residue_col_block(plan) != 2) {
+        throw std::runtime_error("blocked residue case did not use requested block size");
+    }
+
+    oz_hp_cpu::gemm_with_plan(plan,
+                              hp_t(1), a.data(), lda,
+                              b.data(), ldb,
+                              hp_t(0), c.data(), ldc);
+    reference_gemm(oz_hp_cpu::Operation::NoTrans,
+                   oz_hp_cpu::Operation::NoTrans,
+                   m, n, k,
+                   hp_t(1), a, lda,
+                   b, ldb,
+                   hp_t(0), cref, ldc);
+    check_close("blocked residue", c, cref, m, n, ldc);
+}
+
 } // namespace
 
 int main() {
@@ -298,6 +337,7 @@ int main() {
     run_plan_reject_case();
     run_wide_exponent_case();
     run_parallel_crt_case(rng);
+    run_blocked_residue_case(rng);
     run_random_case("nn", oz_hp_cpu::Operation::NoTrans,
                     oz_hp_cpu::Operation::NoTrans, 5, 4, 7, rng);
     run_random_case("tn", oz_hp_cpu::Operation::Trans,
