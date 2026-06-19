@@ -10,6 +10,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 extern "C" {
@@ -62,6 +63,8 @@ struct GemmPlan {
     std::vector<int> col_scale_exp;
     std::vector<int> row_max_scaled_bits;
     std::vector<int> col_max_scaled_bits;
+    int max_pow2_shift = 0;
+    std::vector<std::vector<int>> pow2_residues;
 };
 
 namespace detail {
@@ -73,6 +76,11 @@ struct DoubleParts {
     bool zero = true;
     std::uint64_t mantissa = 0;
     int exponent = 0;
+};
+
+struct ScaledDouble {
+    DoubleParts parts;
+    int shift = 0;
 };
 
 inline void validate_options(const Options &options) {
@@ -437,6 +445,39 @@ inline int scaled_parts_centered_mod(const DoubleParts &p, int shift, int modulu
     return centered_from_positive(static_cast<int>(rem), modulus);
 }
 
+inline int scaled_parts_centered_mod(const DoubleParts &p,
+                                     int shift,
+                                     int modulus,
+                                     const std::vector<int> &pow2_mod) {
+    if (p.zero) {
+        return 0;
+    }
+
+    const int scaled_bits = bit_length_u64(p.mantissa) + shift;
+    if (scaled_bits <= 63) {
+        const std::uint64_t magnitude = p.mantissa << shift;
+        const std::int64_t signed_value =
+            p.negative ? -static_cast<std::int64_t>(magnitude)
+                       : static_cast<std::int64_t>(magnitude);
+        return centered_mod_i64(signed_value, modulus);
+    }
+
+    std::uint64_t pow2 = 0;
+    if (shift >= 0 && static_cast<std::size_t>(shift) < pow2_mod.size()) {
+        pow2 = static_cast<std::uint64_t>(pow2_mod[static_cast<std::size_t>(shift)]);
+    } else {
+        pow2 = pow_mod_u64(2, static_cast<std::uint64_t>(shift),
+                           static_cast<std::uint64_t>(modulus));
+    }
+    const std::uint64_t m = static_cast<std::uint64_t>(modulus);
+    std::uint64_t rem = (p.mantissa % m) * pow2;
+    rem %= m;
+    if (p.negative && rem != 0) {
+        rem = m - rem;
+    }
+    return centered_from_positive(static_cast<int>(rem), modulus);
+}
+
 inline int scaled_double_centered_mod(double value, int scale_exp, int modulus) {
     const DoubleParts p = decompose_double(value);
     if (p.zero) {
@@ -450,13 +491,12 @@ inline int scaled_double_centered_mod(double value, int scale_exp, int modulus) 
     return scaled_parts_centered_mod(p, shift, modulus);
 }
 
-inline int scaled_double_centered_mod_checked(double value,
-                                              int scale_exp,
-                                              int max_scaled_bits,
-                                              int modulus) {
+inline ScaledDouble prepare_scaled_double_checked(double value,
+                                                  int scale_exp,
+                                                  int max_scaled_bits) {
     const DoubleParts p = decompose_double(value);
     if (p.zero) {
-        return 0;
+        return ScaledDouble{};
     }
 
     const int shift = p.exponent + scale_exp;
@@ -467,7 +507,42 @@ inline int scaled_double_centered_mod_checked(double value,
     if (scaled_bits > max_scaled_bits) {
         throw std::invalid_argument("input exceeds GemmPlan scaled integer bound");
     }
-    return scaled_parts_centered_mod(p, shift, modulus);
+    return ScaledDouble{p, shift};
+}
+
+inline int scaled_double_centered_mod_checked(double value,
+                                              int scale_exp,
+                                              int max_scaled_bits,
+                                              int modulus) {
+    const ScaledDouble scaled =
+        prepare_scaled_double_checked(value, scale_exp, max_scaled_bits);
+    return scaled_parts_centered_mod(scaled.parts, scaled.shift, modulus);
+}
+
+inline void build_pow2_residue_tables(GemmPlan &plan) {
+    plan.max_pow2_shift = 0;
+    for (int bits : plan.row_max_scaled_bits) {
+        if (bits > 0) {
+            plan.max_pow2_shift = std::max(plan.max_pow2_shift, bits - 1);
+        }
+    }
+    for (int bits : plan.col_max_scaled_bits) {
+        if (bits > 0) {
+            plan.max_pow2_shift = std::max(plan.max_pow2_shift, bits - 1);
+        }
+    }
+
+    plan.pow2_residues.assign(plan.crt.moduli.size(), {});
+    for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
+        const int p = plan.crt.moduli[imod];
+        std::vector<int> table(static_cast<std::size_t>(plan.max_pow2_shift) + 1);
+        table[0] = 1 % p;
+        for (int shift = 1; shift <= plan.max_pow2_shift; ++shift) {
+            table[static_cast<std::size_t>(shift)] =
+                static_cast<int>((2LL * table[static_cast<std::size_t>(shift - 1)]) % p);
+        }
+        plan.pow2_residues[imod] = std::move(table);
+    }
 }
 
 inline void blas_dgemm_nn(int m, int n, int k,
@@ -500,6 +575,14 @@ inline void validate_gemm_plan(const GemmPlan &plan,
     if (plan.crt.moduli.empty() ||
         plan.crt.garner_inverses.size() != plan.crt.moduli.size()) {
         throw std::invalid_argument("GemmPlan has invalid CRT data");
+    }
+    if (plan.pow2_residues.size() != plan.crt.moduli.size()) {
+        throw std::invalid_argument("GemmPlan has invalid pow2 residue table count");
+    }
+    for (const std::vector<int> &table : plan.pow2_residues) {
+        if (table.size() != static_cast<std::size_t>(plan.max_pow2_shift) + 1) {
+            throw std::invalid_argument("GemmPlan has invalid pow2 residue table size");
+        }
     }
 }
 
@@ -564,6 +647,7 @@ inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
     plan.crt.moduli = detail::choose_moduli(k, plan.crt.planned_bits, options,
                                             &plan.crt.max_exact_modulus);
     detail::finalize_crt_plan(plan.crt);
+    detail::build_pow2_residue_tables(plan);
     return plan;
 }
 
@@ -612,27 +696,52 @@ inline void gemm_with_plan(const GemmPlan &plan,
     std::vector<double> a_mod(static_cast<std::size_t>(m) * k);
     std::vector<double> b_mod(static_cast<std::size_t>(k) * n);
     std::vector<double> c_mod(static_cast<std::size_t>(m) * n);
+    std::vector<detail::ScaledDouble> a_scaled(static_cast<std::size_t>(m) * k);
+    std::vector<detail::ScaledDouble> b_scaled(static_cast<std::size_t>(k) * n);
     std::vector<int> residues(plan.crt.moduli.size());
     std::vector<int> all_residues(plan.crt.moduli.size() * static_cast<std::size_t>(m) * n);
 
+    for (int col = 0; col < k; ++col) {
+        for (int row = 0; row < m; ++row) {
+            const double value = detail::read_a(op_a, a, lda, row, col);
+            a_scaled[row + col * m] =
+                detail::prepare_scaled_double_checked(
+                    value, plan.row_scale_exp[row], plan.row_max_scaled_bits[row]);
+        }
+    }
+
+    for (int col = 0; col < n; ++col) {
+        for (int row = 0; row < k; ++row) {
+            const double value = detail::read_b(op_b, b, ldb, row, col);
+            b_scaled[row + col * k] =
+                detail::prepare_scaled_double_checked(
+                    value, plan.col_scale_exp[col], plan.col_max_scaled_bits[col]);
+        }
+    }
+
     for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
         const int p = plan.crt.moduli[imod];
+        const std::vector<int> &pow2_mod = plan.pow2_residues[imod];
 
         for (int col = 0; col < k; ++col) {
             for (int row = 0; row < m; ++row) {
-                const double value = detail::read_a(op_a, a, lda, row, col);
                 a_mod[row + col * m] = static_cast<double>(
-                    detail::scaled_double_centered_mod_checked(
-                        value, plan.row_scale_exp[row], plan.row_max_scaled_bits[row], p));
+                    detail::scaled_parts_centered_mod(
+                        a_scaled[row + col * m].parts,
+                        a_scaled[row + col * m].shift,
+                        p,
+                        pow2_mod));
             }
         }
 
         for (int col = 0; col < n; ++col) {
             for (int row = 0; row < k; ++row) {
-                const double value = detail::read_b(op_b, b, ldb, row, col);
                 b_mod[row + col * k] = static_cast<double>(
-                    detail::scaled_double_centered_mod_checked(
-                        value, plan.col_scale_exp[col], plan.col_max_scaled_bits[col], p));
+                    detail::scaled_parts_centered_mod(
+                        b_scaled[row + col * k].parts,
+                        b_scaled[row + col * k].shift,
+                        p,
+                        pow2_mod));
             }
         }
 

@@ -217,6 +217,42 @@ void run_plan_reject_case() {
     std::cout << "plan reject ok\n";
 }
 
+void run_wide_exponent_case() {
+    constexpr int m = 1;
+    constexpr int n = 1;
+    constexpr int k = 2;
+    constexpr int lda = m;
+    constexpr int ldb = k;
+    constexpr int ldc = m;
+
+    const std::vector<double> a = {std::ldexp(1.0, 80), std::ldexp(1.0, -80)};
+    const std::vector<double> b = {1.0, 1.0};
+    std::vector<hp_t> c(1, hp_t(0));
+    std::vector<hp_t> cref(1, hp_t(0));
+
+    const oz_hp_cpu::GemmPlan plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb);
+    if (plan.max_pow2_shift < 160 || plan.pow2_residues.empty()) {
+        throw std::runtime_error("wide exponent case did not build pow2 residue tables");
+    }
+
+    oz_hp_cpu::gemm_with_plan(plan,
+                              hp_t(1), a.data(), lda,
+                              b.data(), ldb,
+                              hp_t(0), c.data(), ldc);
+    reference_gemm(oz_hp_cpu::Operation::NoTrans,
+                   oz_hp_cpu::Operation::NoTrans,
+                   m, n, k,
+                   hp_t(1), a, lda,
+                   b, ldb,
+                   hp_t(0), cref, ldc);
+    check_close("wide exponent", c, cref, m, n, ldc);
+}
+
 } // namespace
 
 int main() {
@@ -224,6 +260,7 @@ int main() {
 
     run_cancellation_case();
     run_plan_reject_case();
+    run_wide_exponent_case();
     run_random_case("nn", oz_hp_cpu::Operation::NoTrans,
                     oz_hp_cpu::Operation::NoTrans, 5, 4, 7, rng);
     run_random_case("tn", oz_hp_cpu::Operation::Trans,

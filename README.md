@@ -40,10 +40,11 @@ oz_hp_cpu::gemm_with_plan(
     oz_hp_cpu::float256(0), C, ldc);
 ```
 
-The reusable plan stores CRT data and row/column power-of-two scales. It can be
-reused for the same shape and compatible input exponent ranges. If a later
-input requires a finer scale than the plan contains, execution throws instead
-of silently producing a wrong result.
+The reusable plan stores CRT data, row/column power-of-two scales, and
+`2^shift mod p` tables for the selected prime moduli. It can be reused for the
+same shape and compatible input exponent ranges. If a later input requires a
+finer scale than the plan contains, execution throws instead of silently
+producing a wrong result.
 
 ## Why this differs from `oz-cpu`
 
@@ -106,6 +107,8 @@ path reconstructs the exact `double` input result `1`.
 
 This is a correctness-oriented PoC, not a tuned implementation. It currently
 rebuilds residue matrices for each modulus and performs scalar CRT recovery per
-output element. Obvious next steps are residue blocking, batched/threaded CRT
-reconstruction, richer plan reuse for repeated compatible inputs, and CPU
-matrix-extension backends such as AMX/VNNI for smaller residues.
+output element. It does reuse per-call input decompositions across moduli and
+caches power-of-two residues in reusable plans. Obvious next steps are residue
+blocking, batched/threaded CRT reconstruction, richer plan reuse for repeated
+compatible inputs, and CPU matrix-extension backends such as AMX/VNNI for
+smaller residues.
