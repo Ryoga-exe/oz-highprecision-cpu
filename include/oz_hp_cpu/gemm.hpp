@@ -10,6 +10,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -40,6 +41,8 @@ struct Options {
     int target_bits = 256;
     int guard_bits = 8;
     int max_moduli = 256;
+    // 0 selects an automatic thread count; 1 forces serial CRT recovery.
+    int crt_threads = 0;
 };
 
 struct Plan {
@@ -65,6 +68,7 @@ struct GemmPlan {
     std::vector<int> col_max_scaled_bits;
     int max_pow2_shift = 0;
     std::vector<std::vector<int>> pow2_residues;
+    int crt_threads = 0;
 };
 
 namespace detail {
@@ -92,6 +96,9 @@ inline void validate_options(const Options &options) {
     }
     if (options.max_moduli < 1) {
         throw std::invalid_argument("max_moduli must be >= 1");
+    }
+    if (options.crt_threads < 0) {
+        throw std::invalid_argument("crt_threads must be >= 0");
     }
 }
 
@@ -579,11 +586,29 @@ inline void validate_gemm_plan(const GemmPlan &plan,
     if (plan.pow2_residues.size() != plan.crt.moduli.size()) {
         throw std::invalid_argument("GemmPlan has invalid pow2 residue table count");
     }
+    if (plan.crt_threads < 0) {
+        throw std::invalid_argument("GemmPlan has invalid CRT thread count");
+    }
     for (const std::vector<int> &table : plan.pow2_residues) {
         if (table.size() != static_cast<std::size_t>(plan.max_pow2_shift) + 1) {
             throw std::invalid_argument("GemmPlan has invalid pow2 residue table size");
         }
     }
+}
+
+inline int choose_crt_threads(std::size_t output_size, int requested_threads) {
+    if (output_size < 4096) {
+        return 1;
+    }
+
+    int threads = requested_threads;
+    if (threads == 0) {
+        const unsigned hw = std::thread::hardware_concurrency();
+        threads = (hw == 0) ? 1 : static_cast<int>(hw);
+    }
+    threads = std::max(1, threads);
+    threads = std::min<std::size_t>(static_cast<std::size_t>(threads), output_size);
+    return threads;
 }
 
 template <typename HighPrec>
@@ -627,6 +652,7 @@ inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
     plan.m = m;
     plan.n = n;
     plan.k = k;
+    plan.crt_threads = options.crt_threads;
     plan.row_scale_exp.resize(static_cast<std::size_t>(m));
     plan.col_scale_exp.resize(static_cast<std::size_t>(n));
     plan.row_max_scaled_bits.resize(static_cast<std::size_t>(m));
@@ -657,6 +683,11 @@ inline Plan make_plan(Operation op_a, Operation op_b,
                       const double *b, int ldb,
                       const Options &options = Options{}) {
     return make_gemm_plan(op_a, op_b, m, n, k, a, lda, b, ldb, options).crt;
+}
+
+inline int effective_crt_threads(const GemmPlan &plan) {
+    return detail::choose_crt_threads(static_cast<std::size_t>(plan.m) * plan.n,
+                                      plan.crt_threads);
 }
 
 template <typename HighPrec>
@@ -698,7 +729,6 @@ inline void gemm_with_plan(const GemmPlan &plan,
     std::vector<double> c_mod(static_cast<std::size_t>(m) * n);
     std::vector<detail::ScaledDouble> a_scaled(static_cast<std::size_t>(m) * k);
     std::vector<detail::ScaledDouble> b_scaled(static_cast<std::size_t>(k) * n);
-    std::vector<int> residues(plan.crt.moduli.size());
     std::vector<int> all_residues(plan.crt.moduli.size() * static_cast<std::size_t>(m) * n);
 
     for (int col = 0; col < k; ++col) {
@@ -761,21 +791,43 @@ inline void gemm_with_plan(const GemmPlan &plan,
         }
     }
 
-    for (int col = 0; col < n; ++col) {
-        for (int row = 0; row < m; ++row) {
-            const std::size_t idx =
-                static_cast<std::size_t>(row) + static_cast<std::size_t>(col) * m;
+    const std::size_t output_size = static_cast<std::size_t>(m) * n;
+    const int crt_threads = detail::choose_crt_threads(output_size, plan.crt_threads);
+    auto reconstruct_range = [&](std::size_t begin, std::size_t end) {
+        std::vector<int> thread_residues(plan.crt.moduli.size());
+        for (std::size_t idx = begin; idx < end; ++idx) {
+            const int row = static_cast<int>(idx % static_cast<std::size_t>(m));
+            const int col = static_cast<int>(idx / static_cast<std::size_t>(m));
             for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
-                residues[imod] = all_residues[imod * static_cast<std::size_t>(m) * n + idx];
+                thread_residues[imod] = all_residues[imod * output_size + idx];
             }
 
             const detail::cpp_int crt =
-                detail::reconstruct_crt_centered(residues, plan.crt);
+                detail::reconstruct_crt_centered(thread_residues, plan.crt);
             const int restore_exp = -(plan.row_scale_exp[row] + plan.col_scale_exp[col]);
             const HighPrec ab = detail::scale_cpp_int_pow2<HighPrec>(crt, restore_exp);
             const std::size_t out_idx =
                 static_cast<std::size_t>(row) + static_cast<std::size_t>(col) * ldc;
             c[out_idx] = alpha * ab + beta * c[out_idx];
+        }
+    };
+
+    if (crt_threads == 1) {
+        reconstruct_range(0, output_size);
+    } else {
+        std::vector<std::thread> workers;
+        workers.reserve(static_cast<std::size_t>(crt_threads - 1));
+        for (int tid = 1; tid < crt_threads; ++tid) {
+            const std::size_t begin = output_size * static_cast<std::size_t>(tid) /
+                                      static_cast<std::size_t>(crt_threads);
+            const std::size_t end = output_size * static_cast<std::size_t>(tid + 1) /
+                                    static_cast<std::size_t>(crt_threads);
+            workers.emplace_back(reconstruct_range, begin, end);
+        }
+        const std::size_t first_end = output_size / static_cast<std::size_t>(crt_threads);
+        reconstruct_range(0, first_end);
+        for (std::thread &worker : workers) {
+            worker.join();
         }
     }
 }

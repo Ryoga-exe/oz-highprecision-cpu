@@ -143,7 +143,8 @@ int main(int argc, char **argv) {
 
     std::cout << "m,n,k,moduli,exact_required_bits,planned_bits,"
               << "max_exact_modulus_bound,selected_max_modulus,"
-              << "fp64_seconds,oz_seconds,plan_seconds,oz_reuse_seconds,"
+              << "fp64_seconds,oz_seconds,plan_seconds,crt_threads,"
+              << "oz_reuse_seconds,oz_reuse_serial_seconds,"
               << "naive_hp_seconds,oz_vs_naive_max_abs,fp64_vs_oz_max_abs,"
               << "reuse_vs_oz_max_abs\n";
     std::cout << std::setprecision(12);
@@ -202,6 +203,23 @@ int main(int argc, char **argv) {
         }
         const double reuse_seconds = median(reuse_samples);
 
+        oz_hp_cpu::GemmPlan serial_plan = reusable_plan;
+        serial_plan.crt_threads = 1;
+        std::vector<hp_t> c_reuse_serial(static_cast<std::size_t>(ldc) * tc.n, hp_t(0));
+        std::vector<double> reuse_serial_samples;
+        reuse_serial_samples.reserve(static_cast<std::size_t>(reuse_repeats));
+        for (int repeat = 0; repeat < reuse_repeats; ++repeat) {
+            std::fill(c_reuse_serial.begin(), c_reuse_serial.end(), hp_t(0));
+            const auto reuse_begin = steady_clock_t::now();
+            oz_hp_cpu::gemm_with_plan(serial_plan,
+                                      hp_t(1), a.data(), lda,
+                                      b.data(), ldb,
+                                      hp_t(0), c_reuse_serial.data(), ldc);
+            const auto reuse_end = steady_clock_t::now();
+            reuse_serial_samples.push_back(seconds_since(reuse_begin, reuse_end));
+        }
+        const double reuse_serial_seconds = median(reuse_serial_samples);
+
         double naive_seconds = -1.0;
         hp_t oz_vs_naive = -1;
         if (tc.run_naive) {
@@ -216,6 +234,7 @@ int main(int argc, char **argv) {
         const hp_t reuse_vs_oz = max_abs_diff_hp(c_reuse, c_oz);
 
         const int selected_max_modulus = plan.moduli.empty() ? 0 : plan.moduli.front();
+        const int crt_threads = oz_hp_cpu::effective_crt_threads(reusable_plan);
 
         std::cout << tc.m << ','
                   << tc.n << ','
@@ -228,7 +247,9 @@ int main(int argc, char **argv) {
                   << seconds_since(fp64_begin, fp64_end) << ','
                   << seconds_since(oz_begin, oz_end) << ','
                   << seconds_since(plan_begin, plan_end) << ','
+                  << crt_threads << ','
                   << reuse_seconds << ','
+                  << reuse_serial_seconds << ','
                   << naive_seconds << ','
                   << oz_vs_naive << ','
                   << fp64_vs_oz << ','

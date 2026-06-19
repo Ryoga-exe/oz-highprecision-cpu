@@ -46,6 +46,10 @@ same shape and compatible input exponent ranges. If a later input requires a
 finer scale than the plan contains, execution throws instead of silently
 producing a wrong result.
 
+`Options::crt_threads` controls CRT reconstruction parallelism. The default
+`0` selects an automatic thread count for medium and larger outputs, while `1`
+forces serial reconstruction.
+
 ## Why this differs from `oz-cpu`
 
 `oz-cpu` mirrors the INT8-moduli flow used by GEMMul8. This PoC instead chooses
@@ -80,8 +84,9 @@ make -C oz-highprecision-cpu test BLAS_LIBS="-lblas"
 
 The benchmark target runs `build/benchmark --quick` and prints CSV columns for
 FP64 BLAS time, one-shot modular/CRT time, plan construction time, reusable-plan
-execution time, optional naive Boost multiprecision time, and maximum absolute
-differences. Run the default benchmark set with:
+execution time, serial reusable-plan execution time, optional naive Boost
+multiprecision time, and maximum absolute differences. Run the default
+benchmark set with:
 
 ```sh
 make -C oz-highprecision-cpu build/benchmark
@@ -107,8 +112,8 @@ path reconstructs the exact `double` input result `1`.
 
 This is a correctness-oriented PoC, not a tuned implementation. It currently
 rebuilds residue matrices for each modulus and performs scalar CRT recovery per
-output element. It does reuse per-call input decompositions across moduli and
+output element, though CRT recovery is parallelized over output entries for
+larger outputs. It does reuse per-call input decompositions across moduli and
 caches power-of-two residues in reusable plans. Obvious next steps are residue
-blocking, batched/threaded CRT reconstruction, richer plan reuse for repeated
-compatible inputs, and CPU matrix-extension backends such as AMX/VNNI for
-smaller residues.
+blocking, richer plan reuse for repeated compatible inputs, and CPU
+matrix-extension backends such as AMX/VNNI for smaller residues.
