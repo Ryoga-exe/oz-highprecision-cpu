@@ -412,6 +412,15 @@ inline int scaled_double_centered_mod(double value, int scale_exp, int modulus) 
         throw std::logic_error("scale exponent does not make input integral");
     }
 
+    const int scaled_bits = bit_length_u64(p.mantissa) + shift;
+    if (scaled_bits <= 63) {
+        const std::uint64_t magnitude = p.mantissa << shift;
+        const std::int64_t signed_value =
+            p.negative ? -static_cast<std::int64_t>(magnitude)
+                       : static_cast<std::int64_t>(magnitude);
+        return centered_mod_i64(signed_value, modulus);
+    }
+
     const std::uint64_t m = static_cast<std::uint64_t>(modulus);
     std::uint64_t rem = (p.mantissa % m) * pow_mod_u64(2, static_cast<std::uint64_t>(shift), m);
     rem %= m;
