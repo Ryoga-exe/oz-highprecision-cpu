@@ -1,0 +1,187 @@
+#include <oz_hp_cpu/gemm.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+#include <random>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace {
+
+using hp_t = oz_hp_cpu::binary_float<256>;
+
+double read_matrix(oz_hp_cpu::Operation op,
+                   const std::vector<double> &a,
+                   int lda,
+                   int row,
+                   int col) {
+    return (op == oz_hp_cpu::Operation::NoTrans) ? a[row + col * lda] : a[col + row * lda];
+}
+
+void reference_gemm(oz_hp_cpu::Operation op_a,
+                    oz_hp_cpu::Operation op_b,
+                    int m,
+                    int n,
+                    int k,
+                    const hp_t &alpha,
+                    const std::vector<double> &a,
+                    int lda,
+                    const std::vector<double> &b,
+                    int ldb,
+                    const hp_t &beta,
+                    std::vector<hp_t> &c,
+                    int ldc) {
+    for (int col = 0; col < n; ++col) {
+        for (int row = 0; row < m; ++row) {
+            hp_t sum = 0;
+            for (int kk = 0; kk < k; ++kk) {
+                sum += hp_t(read_matrix(op_a, a, lda, row, kk)) *
+                       hp_t(read_matrix(op_b, b, ldb, kk, col));
+            }
+            c[row + col * ldc] = alpha * sum + beta * c[row + col * ldc];
+        }
+    }
+}
+
+std::vector<double> random_matrix(int rows,
+                                  int cols,
+                                  int ld,
+                                  std::mt19937_64 &rng) {
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    std::vector<double> out(static_cast<std::size_t>(ld) * cols, 0.0);
+    for (int col = 0; col < cols; ++col) {
+        for (int row = 0; row < rows; ++row) {
+            out[row + col * ld] = dist(rng);
+        }
+    }
+    return out;
+}
+
+void check_close(const std::string &name,
+                 const std::vector<hp_t> &got,
+                 const std::vector<hp_t> &want,
+                 int m,
+                 int n,
+                 int ldc) {
+    hp_t max_abs = 0;
+    hp_t max_rel = 0;
+    for (int col = 0; col < n; ++col) {
+        for (int row = 0; row < m; ++row) {
+            const hp_t abs_err = abs(got[row + col * ldc] - want[row + col * ldc]);
+            const hp_t want_abs = abs(want[row + col * ldc]);
+            const hp_t denom = (want_abs > hp_t(1)) ? want_abs : hp_t(1);
+            const hp_t rel_err = abs_err / denom;
+            if (abs_err > max_abs) {
+                max_abs = abs_err;
+            }
+            if (rel_err > max_rel) {
+                max_rel = rel_err;
+            }
+        }
+    }
+
+    const hp_t tol("1e-60");
+    if (max_abs > tol && max_rel > tol) {
+        std::ostringstream oss;
+        oss << name << " failed: max_abs=" << max_abs << " max_rel=" << max_rel;
+        throw std::runtime_error(oss.str());
+    }
+    std::cout << name << " ok: max_abs=" << max_abs
+              << " max_rel=" << max_rel << '\n';
+}
+
+void run_random_case(const std::string &name,
+                     oz_hp_cpu::Operation op_a,
+                     oz_hp_cpu::Operation op_b,
+                     int m,
+                     int n,
+                     int k,
+                     std::mt19937_64 &rng) {
+    const int a_rows = (op_a == oz_hp_cpu::Operation::NoTrans) ? m : k;
+    const int a_cols = (op_a == oz_hp_cpu::Operation::NoTrans) ? k : m;
+    const int b_rows = (op_b == oz_hp_cpu::Operation::NoTrans) ? k : n;
+    const int b_cols = (op_b == oz_hp_cpu::Operation::NoTrans) ? n : k;
+    const int lda = a_rows + 2;
+    const int ldb = b_rows + 3;
+    const int ldc = m + 1;
+
+    std::vector<double> a = random_matrix(a_rows, a_cols, lda, rng);
+    std::vector<double> b = random_matrix(b_rows, b_cols, ldb, rng);
+    std::vector<hp_t> c(static_cast<std::size_t>(ldc) * n, hp_t(0));
+    std::vector<hp_t> cref = c;
+
+    oz_hp_cpu::Options options;
+    options.target_bits = 256;
+    oz_hp_cpu::Plan plan;
+    oz_hp_cpu::gemm(op_a, op_b,
+                    m, n, k,
+                    hp_t(1), a.data(), lda,
+                    b.data(), ldb,
+                    hp_t(0), c.data(), ldc,
+                    options, &plan);
+
+    reference_gemm(op_a, op_b,
+                   m, n, k,
+                   hp_t(1), a, lda,
+                   b, ldb,
+                   hp_t(0), cref, ldc);
+    std::cout << name << " plan: moduli=" << plan.moduli.size()
+              << " exact_required_bits=" << plan.exact_required_bits
+              << " planned_bits=" << plan.planned_bits
+              << " max_modulus=" << plan.max_exact_modulus << '\n';
+    check_close(name, c, cref, m, n, ldc);
+}
+
+void run_cancellation_case() {
+    constexpr int m = 1;
+    constexpr int n = 1;
+    constexpr int k = 3;
+    constexpr int lda = m;
+    constexpr int ldb = k;
+    constexpr int ldc = m;
+
+    const std::vector<double> a = {1.0e16, 1.0, -1.0e16};
+    const std::vector<double> b = {1.0, 1.0, 1.0};
+    std::vector<hp_t> c(1, hp_t(0));
+
+    oz_hp_cpu::Options options;
+    options.target_bits = 256;
+    oz_hp_cpu::Plan plan;
+    oz_hp_cpu::gemm(oz_hp_cpu::Operation::NoTrans,
+                    oz_hp_cpu::Operation::NoTrans,
+                    m, n, k,
+                    hp_t(1), a.data(), lda,
+                    b.data(), ldb,
+                    hp_t(0), c.data(), ldc,
+                    options, &plan);
+
+    const volatile double fp64_left = (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2];
+    if (c[0] != hp_t(1)) {
+        std::ostringstream oss;
+        oss << "cancellation failed: got " << c[0];
+        throw std::runtime_error(oss.str());
+    }
+
+    std::cout << "cancellation ok: high_precision=" << c[0]
+              << " fp64_left_to_right=" << fp64_left
+              << " moduli=" << plan.moduli.size() << '\n';
+}
+
+} // namespace
+
+int main() {
+    std::mt19937_64 rng(0x515151);
+
+    run_cancellation_case();
+    run_random_case("nn", oz_hp_cpu::Operation::NoTrans,
+                    oz_hp_cpu::Operation::NoTrans, 5, 4, 7, rng);
+    run_random_case("tn", oz_hp_cpu::Operation::Trans,
+                    oz_hp_cpu::Operation::NoTrans, 4, 6, 5, rng);
+    run_random_case("nt", oz_hp_cpu::Operation::NoTrans,
+                    oz_hp_cpu::Operation::Trans, 6, 5, 4, rng);
+
+    return 0;
+}

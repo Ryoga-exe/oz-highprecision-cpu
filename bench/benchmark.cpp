@@ -1,0 +1,195 @@
+#include <oz_hp_cpu/gemm.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <random>
+#include <string>
+#include <vector>
+
+namespace {
+
+using hp_t = oz_hp_cpu::binary_float<256>;
+using steady_clock_t = std::chrono::steady_clock;
+
+struct Case {
+    int m;
+    int n;
+    int k;
+    bool run_naive;
+};
+
+double seconds_since(steady_clock_t::time_point begin, steady_clock_t::time_point end) {
+    return std::chrono::duration<double>(end - begin).count();
+}
+
+std::vector<double> random_matrix(int rows, int cols, int ld, std::mt19937_64 &rng) {
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    std::vector<double> out(static_cast<std::size_t>(ld) * cols, 0.0);
+    for (int col = 0; col < cols; ++col) {
+        for (int row = 0; row < rows; ++row) {
+            out[row + col * ld] = dist(rng);
+        }
+    }
+    return out;
+}
+
+void blas_dgemm(int m, int n, int k,
+                const double *a, int lda,
+                const double *b, int ldb,
+                double *c, int ldc) {
+    const char trans = 'N';
+    const double one = 1.0;
+    const double zero = 0.0;
+    dgemm_(&trans, &trans, &m, &n, &k,
+           &one, a, &lda, b, &ldb, &zero, c, &ldc);
+}
+
+std::vector<hp_t> naive_hp_gemm(int m, int n, int k,
+                                const std::vector<double> &a, int lda,
+                                const std::vector<double> &b, int ldb) {
+    std::vector<hp_t> c(static_cast<std::size_t>(m) * n, hp_t(0));
+    for (int col = 0; col < n; ++col) {
+        for (int row = 0; row < m; ++row) {
+            hp_t sum = 0;
+            for (int kk = 0; kk < k; ++kk) {
+                sum += hp_t(a[row + kk * lda]) * hp_t(b[kk + col * ldb]);
+            }
+            c[row + col * m] = sum;
+        }
+    }
+    return c;
+}
+
+hp_t max_abs_diff_hp(const std::vector<hp_t> &x, const std::vector<hp_t> &y) {
+    hp_t out = 0;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const hp_t diff = abs(x[i] - y[i]);
+        if (diff > out) {
+            out = diff;
+        }
+    }
+    return out;
+}
+
+hp_t max_abs_diff_fp64(const std::vector<double> &x, const std::vector<hp_t> &y) {
+    hp_t out = 0;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const hp_t diff = abs(hp_t(x[i]) - y[i]);
+        if (diff > out) {
+            out = diff;
+        }
+    }
+    return out;
+}
+
+std::vector<Case> default_cases() {
+    return {
+        {8, 8, 8, true},
+        {16, 16, 16, true},
+        {32, 32, 32, true},
+        {64, 64, 64, false},
+        {96, 96, 96, false}
+    };
+}
+
+std::vector<Case> quick_cases() {
+    return {
+        {8, 8, 8, true},
+        {16, 16, 16, true},
+        {32, 32, 32, true}
+    };
+}
+
+std::vector<Case> parse_cases(int argc, char **argv) {
+    if (argc <= 1) {
+        return default_cases();
+    }
+
+    const std::string mode = argv[1];
+    if (mode == "--quick") {
+        return quick_cases();
+    }
+    if (mode == "--one") {
+        if (argc != 5) {
+            throw std::invalid_argument("usage: benchmark --one M N K");
+        }
+        return {{std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]), true}};
+    }
+    throw std::invalid_argument("usage: benchmark [--quick|--one M N K]");
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+    const std::vector<Case> cases = parse_cases(argc, argv);
+    std::mt19937_64 rng(0x61282024);
+
+    oz_hp_cpu::Options options;
+    options.target_bits = 256;
+    options.guard_bits = 8;
+
+    std::cout << "m,n,k,moduli,exact_required_bits,planned_bits,max_modulus,"
+              << "fp64_seconds,oz_seconds,naive_hp_seconds,"
+              << "oz_vs_naive_max_abs,fp64_vs_oz_max_abs\n";
+    std::cout << std::setprecision(12);
+
+    for (const Case &tc : cases) {
+        const int lda = tc.m;
+        const int ldb = tc.k;
+        const int ldc = tc.m;
+        std::vector<double> a = random_matrix(tc.m, tc.k, lda, rng);
+        std::vector<double> b = random_matrix(tc.k, tc.n, ldb, rng);
+        std::vector<double> c_fp64(static_cast<std::size_t>(ldc) * tc.n, 0.0);
+        std::vector<hp_t> c_oz(static_cast<std::size_t>(ldc) * tc.n, hp_t(0));
+        std::vector<hp_t> c_naive;
+
+        const auto fp64_begin = steady_clock_t::now();
+        blas_dgemm(tc.m, tc.n, tc.k,
+                   a.data(), lda,
+                   b.data(), ldb,
+                   c_fp64.data(), ldc);
+        const auto fp64_end = steady_clock_t::now();
+
+        oz_hp_cpu::Plan plan;
+        const auto oz_begin = steady_clock_t::now();
+        oz_hp_cpu::gemm(oz_hp_cpu::Operation::NoTrans,
+                        oz_hp_cpu::Operation::NoTrans,
+                        tc.m, tc.n, tc.k,
+                        hp_t(1), a.data(), lda,
+                        b.data(), ldb,
+                        hp_t(0), c_oz.data(), ldc,
+                        options, &plan);
+        const auto oz_end = steady_clock_t::now();
+
+        double naive_seconds = -1.0;
+        hp_t oz_vs_naive = -1;
+        if (tc.run_naive) {
+            const auto naive_begin = steady_clock_t::now();
+            c_naive = naive_hp_gemm(tc.m, tc.n, tc.k, a, lda, b, ldb);
+            const auto naive_end = steady_clock_t::now();
+            naive_seconds = seconds_since(naive_begin, naive_end);
+            oz_vs_naive = max_abs_diff_hp(c_oz, c_naive);
+        }
+
+        const hp_t fp64_vs_oz = max_abs_diff_fp64(c_fp64, c_oz);
+
+        std::cout << tc.m << ','
+                  << tc.n << ','
+                  << tc.k << ','
+                  << plan.moduli.size() << ','
+                  << plan.exact_required_bits << ','
+                  << plan.planned_bits << ','
+                  << plan.max_exact_modulus << ','
+                  << seconds_since(fp64_begin, fp64_end) << ','
+                  << seconds_since(oz_begin, oz_end) << ','
+                  << naive_seconds << ','
+                  << oz_vs_naive << ','
+                  << fp64_vs_oz << '\n';
+    }
+
+    return 0;
+}
