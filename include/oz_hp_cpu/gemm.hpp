@@ -47,6 +47,7 @@ struct Plan {
     boost::multiprecision::cpp_int modulus_product = 1;
     int exact_required_bits = 0;
     int planned_bits = 0;
+    // Upper bound imposed by exact FP64 accumulation; not necessarily prime.
     int max_exact_modulus = 0;
 };
 

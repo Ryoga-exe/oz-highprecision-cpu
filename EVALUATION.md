@@ -49,21 +49,25 @@ oz-highprecision-cpu/build/benchmark
 CSV output:
 
 ```text
-m,n,k,moduli,exact_required_bits,planned_bits,max_modulus,fp64_seconds,oz_seconds,naive_hp_seconds,oz_vs_naive_max_abs,fp64_vs_oz_max_abs
-8,8,8,11,110,264,67108862,4.01e-06,0.000229009,0.000178063,0,3.71258675529e-16
-16,16,16,11,111,264,47453131,2.245e-06,0.000681966,0.001482405,0,7.59906913097e-16
-32,32,32,11,112,264,33554430,1.6338e-05,0.002731191,0.011914326,0,2.43739505418e-15
-64,64,64,11,113,264,23726565,0.000128199,0.010985777,-1,-1,4.82793210353e-15
-96,96,96,11,114,264,19372659,0.000433906,0.026004713,-1,-1,1.04819437783e-14
+m,n,k,moduli,exact_required_bits,planned_bits,max_exact_modulus_bound,selected_max_modulus,fp64_seconds,oz_seconds,naive_hp_seconds,oz_vs_naive_max_abs,fp64_vs_oz_max_abs
+8,8,8,11,110,264,67108862,67108859,4.22e-06,0.000215019,0.00020176,0,3.71258675529e-16
+16,16,16,11,111,264,47453131,47453111,2.453e-06,0.000724544,0.001546262,0,7.59906913097e-16
+32,32,32,11,112,264,33554430,33554393,1.7096e-05,0.002911882,0.012398997,0,2.43739505418e-15
+64,64,64,11,113,264,23726565,23726561,0.000135701,0.011432385,-1,-1,4.82793210353e-15
+96,96,96,11,114,264,19372659,19372651,0.000434999,0.026155289,-1,-1,1.04819437783e-14
 ```
 
 Additional 64 and 128 cases with naive Boost multiprecision enabled:
 
 ```text
-m,n,k,moduli,exact_required_bits,planned_bits,max_modulus,fp64_seconds,oz_seconds,naive_hp_seconds,oz_vs_naive_max_abs,fp64_vs_oz_max_abs
-64,64,64,11,113,264,23726565,0.000198665,0.011161881,0.093207345,0,4.59062343515e-15
-128,128,128,12,114,264,16777214,0.001037399,0.053709699,0.715663287,0,1.12859793792e-14
+m,n,k,moduli,exact_required_bits,planned_bits,max_exact_modulus_bound,selected_max_modulus,fp64_seconds,oz_seconds,naive_hp_seconds,oz_vs_naive_max_abs,fp64_vs_oz_max_abs
+64,64,64,11,113,264,23726565,23726561,0.000160877,0.011521812,0.090927759,0,4.59062343515e-15
+128,128,128,12,114,264,16777214,16777213,0.001143056,0.055555275,0.709948228,0,1.12859793792e-14
 ```
+
+`max_exact_modulus_bound` is the largest integer allowed by the exact FP64
+accumulation bound. It is not necessarily prime. `selected_max_modulus` is the
+largest prime modulus actually used.
 
 ## Initial Read
 

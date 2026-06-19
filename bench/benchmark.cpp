@@ -132,7 +132,8 @@ int main(int argc, char **argv) {
     options.target_bits = 256;
     options.guard_bits = 8;
 
-    std::cout << "m,n,k,moduli,exact_required_bits,planned_bits,max_modulus,"
+    std::cout << "m,n,k,moduli,exact_required_bits,planned_bits,"
+              << "max_exact_modulus_bound,selected_max_modulus,"
               << "fp64_seconds,oz_seconds,naive_hp_seconds,"
               << "oz_vs_naive_max_abs,fp64_vs_oz_max_abs\n";
     std::cout << std::setprecision(12);
@@ -177,6 +178,8 @@ int main(int argc, char **argv) {
 
         const hp_t fp64_vs_oz = max_abs_diff_fp64(c_fp64, c_oz);
 
+        const int selected_max_modulus = plan.moduli.empty() ? 0 : plan.moduli.front();
+
         std::cout << tc.m << ','
                   << tc.n << ','
                   << tc.k << ','
@@ -184,6 +187,7 @@ int main(int argc, char **argv) {
                   << plan.exact_required_bits << ','
                   << plan.planned_bits << ','
                   << plan.max_exact_modulus << ','
+                  << selected_max_modulus << ','
                   << seconds_since(fp64_begin, fp64_end) << ','
                   << seconds_since(oz_begin, oz_end) << ','
                   << naive_seconds << ','

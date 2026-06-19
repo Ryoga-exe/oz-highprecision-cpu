@@ -131,7 +131,7 @@ void run_random_case(const std::string &name,
     std::cout << name << " plan: moduli=" << plan.moduli.size()
               << " exact_required_bits=" << plan.exact_required_bits
               << " planned_bits=" << plan.planned_bits
-              << " max_modulus=" << plan.max_exact_modulus << '\n';
+              << " max_exact_modulus_bound=" << plan.max_exact_modulus << '\n';
     check_close(name, c, cref, m, n, ldc);
 }
 
