@@ -86,6 +86,15 @@ hp_t max_abs_diff_fp64(const std::vector<double> &x, const std::vector<hp_t> &y)
     return out;
 }
 
+double median(std::vector<double> values) {
+    if (values.empty()) {
+        return 0.0;
+    }
+    const std::size_t mid = values.size() / 2;
+    std::nth_element(values.begin(), values.begin() + mid, values.end());
+    return values[mid];
+}
+
 std::vector<Case> default_cases() {
     return {
         {8, 8, 8, true},
@@ -134,8 +143,9 @@ int main(int argc, char **argv) {
 
     std::cout << "m,n,k,moduli,exact_required_bits,planned_bits,"
               << "max_exact_modulus_bound,selected_max_modulus,"
-              << "fp64_seconds,oz_seconds,naive_hp_seconds,"
-              << "oz_vs_naive_max_abs,fp64_vs_oz_max_abs\n";
+              << "fp64_seconds,oz_seconds,plan_seconds,oz_reuse_seconds,"
+              << "naive_hp_seconds,oz_vs_naive_max_abs,fp64_vs_oz_max_abs,"
+              << "reuse_vs_oz_max_abs\n";
     std::cout << std::setprecision(12);
 
     for (const Case &tc : cases) {
@@ -166,6 +176,32 @@ int main(int argc, char **argv) {
                         options, &plan);
         const auto oz_end = steady_clock_t::now();
 
+        const auto plan_begin = steady_clock_t::now();
+        const oz_hp_cpu::GemmPlan reusable_plan =
+            oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                      oz_hp_cpu::Operation::NoTrans,
+                                      tc.m, tc.n, tc.k,
+                                      a.data(), lda,
+                                      b.data(), ldb,
+                                      options);
+        const auto plan_end = steady_clock_t::now();
+
+        std::vector<hp_t> c_reuse(static_cast<std::size_t>(ldc) * tc.n, hp_t(0));
+        std::vector<double> reuse_samples;
+        const int reuse_repeats = (tc.m <= 32) ? 3 : 1;
+        reuse_samples.reserve(static_cast<std::size_t>(reuse_repeats));
+        for (int repeat = 0; repeat < reuse_repeats; ++repeat) {
+            std::fill(c_reuse.begin(), c_reuse.end(), hp_t(0));
+            const auto reuse_begin = steady_clock_t::now();
+            oz_hp_cpu::gemm_with_plan(reusable_plan,
+                                      hp_t(1), a.data(), lda,
+                                      b.data(), ldb,
+                                      hp_t(0), c_reuse.data(), ldc);
+            const auto reuse_end = steady_clock_t::now();
+            reuse_samples.push_back(seconds_since(reuse_begin, reuse_end));
+        }
+        const double reuse_seconds = median(reuse_samples);
+
         double naive_seconds = -1.0;
         hp_t oz_vs_naive = -1;
         if (tc.run_naive) {
@@ -177,6 +213,7 @@ int main(int argc, char **argv) {
         }
 
         const hp_t fp64_vs_oz = max_abs_diff_fp64(c_fp64, c_oz);
+        const hp_t reuse_vs_oz = max_abs_diff_hp(c_reuse, c_oz);
 
         const int selected_max_modulus = plan.moduli.empty() ? 0 : plan.moduli.front();
 
@@ -190,9 +227,12 @@ int main(int argc, char **argv) {
                   << selected_max_modulus << ','
                   << seconds_since(fp64_begin, fp64_end) << ','
                   << seconds_since(oz_begin, oz_end) << ','
+                  << seconds_since(plan_begin, plan_end) << ','
+                  << reuse_seconds << ','
                   << naive_seconds << ','
                   << oz_vs_naive << ','
-                  << fp64_vs_oz << '\n';
+                  << fp64_vs_oz << ','
+                  << reuse_vs_oz << '\n';
     }
 
     return 0;

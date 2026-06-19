@@ -123,6 +123,18 @@ void run_random_case(const std::string &name,
                     hp_t(0), c.data(), ldc,
                     options, &plan);
 
+    const oz_hp_cpu::GemmPlan reusable_plan =
+        oz_hp_cpu::make_gemm_plan(op_a, op_b,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb,
+                                  options);
+    std::vector<hp_t> c_reuse(static_cast<std::size_t>(ldc) * n, hp_t(0));
+    oz_hp_cpu::gemm_with_plan(reusable_plan,
+                              hp_t(1), a.data(), lda,
+                              b.data(), ldb,
+                              hp_t(0), c_reuse.data(), ldc);
+
     reference_gemm(op_a, op_b,
                    m, n, k,
                    hp_t(1), a, lda,
@@ -133,6 +145,7 @@ void run_random_case(const std::string &name,
               << " planned_bits=" << plan.planned_bits
               << " max_exact_modulus_bound=" << plan.max_exact_modulus << '\n';
     check_close(name, c, cref, m, n, ldc);
+    check_close(name + " reusable plan", c_reuse, cref, m, n, ldc);
 }
 
 void run_cancellation_case() {
@@ -170,12 +183,47 @@ void run_cancellation_case() {
               << " moduli=" << plan.moduli.size() << '\n';
 }
 
+void run_plan_reject_case() {
+    constexpr int m = 1;
+    constexpr int n = 1;
+    constexpr int k = 1;
+    constexpr int lda = m;
+    constexpr int ldb = k;
+    constexpr int ldc = m;
+
+    const std::vector<double> a = {1.0};
+    const std::vector<double> b = {1.0};
+    const oz_hp_cpu::GemmPlan plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb);
+
+    const std::vector<double> finer_a = {0.5};
+    std::vector<hp_t> c(1, hp_t(0));
+    bool rejected = false;
+    try {
+        oz_hp_cpu::gemm_with_plan(plan,
+                                  hp_t(1), finer_a.data(), lda,
+                                  b.data(), ldb,
+                                  hp_t(0), c.data(), ldc);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    if (!rejected) {
+        throw std::runtime_error("plan reuse accepted incompatible input");
+    }
+    std::cout << "plan reject ok\n";
+}
+
 } // namespace
 
 int main() {
     std::mt19937_64 rng(0x515151);
 
     run_cancellation_case();
+    run_plan_reject_case();
     run_random_case("nn", oz_hp_cpu::Operation::NoTrans,
                     oz_hp_cpu::Operation::NoTrans, 5, 4, 7, rng);
     run_random_case("tn", oz_hp_cpu::Operation::Trans,

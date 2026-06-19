@@ -51,6 +51,19 @@ struct Plan {
     int max_exact_modulus = 0;
 };
 
+struct GemmPlan {
+    Operation op_a = Operation::NoTrans;
+    Operation op_b = Operation::NoTrans;
+    int m = 0;
+    int n = 0;
+    int k = 0;
+    Plan crt;
+    std::vector<int> row_scale_exp;
+    std::vector<int> col_scale_exp;
+    std::vector<int> row_max_scaled_bits;
+    std::vector<int> col_max_scaled_bits;
+};
+
 namespace detail {
 
 using boost::multiprecision::cpp_int;
@@ -401,15 +414,9 @@ inline cpp_int reconstruct_crt_centered(const std::vector<int> &residues,
     return x;
 }
 
-inline int scaled_double_centered_mod(double value, int scale_exp, int modulus) {
-    const DoubleParts p = decompose_double(value);
+inline int scaled_parts_centered_mod(const DoubleParts &p, int shift, int modulus) {
     if (p.zero) {
         return 0;
-    }
-
-    const int shift = p.exponent + scale_exp;
-    if (shift < 0) {
-        throw std::logic_error("scale exponent does not make input integral");
     }
 
     const int scaled_bits = bit_length_u64(p.mantissa) + shift;
@@ -430,6 +437,39 @@ inline int scaled_double_centered_mod(double value, int scale_exp, int modulus) 
     return centered_from_positive(static_cast<int>(rem), modulus);
 }
 
+inline int scaled_double_centered_mod(double value, int scale_exp, int modulus) {
+    const DoubleParts p = decompose_double(value);
+    if (p.zero) {
+        return 0;
+    }
+
+    const int shift = p.exponent + scale_exp;
+    if (shift < 0) {
+        throw std::logic_error("scale exponent does not make input integral");
+    }
+    return scaled_parts_centered_mod(p, shift, modulus);
+}
+
+inline int scaled_double_centered_mod_checked(double value,
+                                              int scale_exp,
+                                              int max_scaled_bits,
+                                              int modulus) {
+    const DoubleParts p = decompose_double(value);
+    if (p.zero) {
+        return 0;
+    }
+
+    const int shift = p.exponent + scale_exp;
+    if (shift < 0) {
+        throw std::invalid_argument("input requires a finer scale than GemmPlan provides");
+    }
+    const int scaled_bits = bit_length_u64(p.mantissa) + shift;
+    if (scaled_bits > max_scaled_bits) {
+        throw std::invalid_argument("input exceeds GemmPlan scaled integer bound");
+    }
+    return scaled_parts_centered_mod(p, shift, modulus);
+}
+
 inline void blas_dgemm_nn(int m, int n, int k,
                           const double *a, int lda,
                           const double *b, int ldb,
@@ -441,6 +481,28 @@ inline void blas_dgemm_nn(int m, int n, int k,
            &one, a, &lda, b, &ldb, &zero, c, &ldc);
 }
 
+inline void validate_gemm_plan(const GemmPlan &plan,
+                               Operation op_a,
+                               Operation op_b,
+                               int m,
+                               int n,
+                               int k) {
+    if (plan.op_a != op_a || plan.op_b != op_b ||
+        plan.m != m || plan.n != n || plan.k != k) {
+        throw std::invalid_argument("GemmPlan does not match requested GEMM shape");
+    }
+    if (plan.row_scale_exp.size() != static_cast<std::size_t>(m) ||
+        plan.col_scale_exp.size() != static_cast<std::size_t>(n) ||
+        plan.row_max_scaled_bits.size() != static_cast<std::size_t>(m) ||
+        plan.col_max_scaled_bits.size() != static_cast<std::size_t>(n)) {
+        throw std::invalid_argument("GemmPlan has invalid scale vector sizes");
+    }
+    if (plan.crt.moduli.empty() ||
+        plan.crt.garner_inverses.size() != plan.crt.moduli.size()) {
+        throw std::invalid_argument("GemmPlan has invalid CRT data");
+    }
+}
+
 template <typename HighPrec>
 inline HighPrec scale_cpp_int_pow2(const cpp_int &value, int exponent) {
     using boost::multiprecision::ldexp;
@@ -450,11 +512,11 @@ inline HighPrec scale_cpp_int_pow2(const cpp_int &value, int exponent) {
 
 } // namespace detail
 
-inline Plan make_plan(Operation op_a, Operation op_b,
-                      int m, int n, int k,
-                      const double *a, int lda,
-                      const double *b, int ldb,
-                      const Options &options = Options{}) {
+inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
+                               int m, int n, int k,
+                               const double *a, int lda,
+                               const double *b, int ldb,
+                               const Options &options = Options{}) {
     detail::validate_options(options);
     detail::validate_gemm_args(op_a, op_b, m, n, k, a, lda, b, ldb);
 
@@ -476,29 +538,58 @@ inline Plan make_plan(Operation op_a, Operation op_b,
         max_col_bits = std::max(max_col_bits, cols[col].max_scaled_bits);
     }
 
-    Plan plan;
-    plan.exact_required_bits = max_row_bits + max_col_bits +
-                               detail::ceil_log2_int(std::max(1, k)) + 1;
-    plan.planned_bits = std::max(options.target_bits, plan.exact_required_bits) +
-                        options.guard_bits;
-    plan.moduli = detail::choose_moduli(k, plan.planned_bits, options,
-                                        &plan.max_exact_modulus);
-    detail::finalize_crt_plan(plan);
+    GemmPlan plan;
+    plan.op_a = op_a;
+    plan.op_b = op_b;
+    plan.m = m;
+    plan.n = n;
+    plan.k = k;
+    plan.row_scale_exp.resize(static_cast<std::size_t>(m));
+    plan.col_scale_exp.resize(static_cast<std::size_t>(n));
+    plan.row_max_scaled_bits.resize(static_cast<std::size_t>(m));
+    plan.col_max_scaled_bits.resize(static_cast<std::size_t>(n));
+    for (int row = 0; row < m; ++row) {
+        plan.row_scale_exp[row] = rows[row].scale_exp;
+        plan.row_max_scaled_bits[row] = rows[row].max_scaled_bits;
+    }
+    for (int col = 0; col < n; ++col) {
+        plan.col_scale_exp[col] = cols[col].scale_exp;
+        plan.col_max_scaled_bits[col] = cols[col].max_scaled_bits;
+    }
+
+    plan.crt.exact_required_bits = max_row_bits + max_col_bits +
+                                   detail::ceil_log2_int(std::max(1, k)) + 1;
+    plan.crt.planned_bits = std::max(options.target_bits, plan.crt.exact_required_bits) +
+                            options.guard_bits;
+    plan.crt.moduli = detail::choose_moduli(k, plan.crt.planned_bits, options,
+                                            &plan.crt.max_exact_modulus);
+    detail::finalize_crt_plan(plan.crt);
     return plan;
 }
 
+inline Plan make_plan(Operation op_a, Operation op_b,
+                      int m, int n, int k,
+                      const double *a, int lda,
+                      const double *b, int ldb,
+                      const Options &options = Options{}) {
+    return make_gemm_plan(op_a, op_b, m, n, k, a, lda, b, ldb, options).crt;
+}
+
 template <typename HighPrec>
-inline void gemm(Operation op_a, Operation op_b,
-                 int m, int n, int k,
-                 const HighPrec &alpha,
-                 const double *a, int lda,
-                 const double *b, int ldb,
-                 const HighPrec &beta,
-                 HighPrec *c, int ldc,
-                 const Options &options = Options{},
-                 Plan *plan_out = nullptr) {
-    detail::validate_options(options);
+inline void gemm_with_plan(const GemmPlan &plan,
+                           const HighPrec &alpha,
+                           const double *a, int lda,
+                           const double *b, int ldb,
+                           const HighPrec &beta,
+                           HighPrec *c, int ldc) {
+    const Operation op_a = plan.op_a;
+    const Operation op_b = plan.op_b;
+    const int m = plan.m;
+    const int n = plan.n;
+    const int k = plan.k;
+
     detail::validate_gemm_args(op_a, op_b, m, n, k, a, lda, b, ldb);
+    detail::validate_gemm_plan(plan, op_a, op_b, m, n, k);
     if (c == nullptr) {
         throw std::invalid_argument("C must be non-null");
     }
@@ -518,50 +609,21 @@ inline void gemm(Operation op_a, Operation op_b,
         return;
     }
 
-    std::vector<detail::VectorScale> rows(static_cast<std::size_t>(m));
-    std::vector<detail::VectorScale> cols(static_cast<std::size_t>(n));
-
-    int max_row_bits = 0;
-    int max_col_bits = 0;
-    for (int row = 0; row < m; ++row) {
-        rows[row] = detail::analyze_vector(k, [&](int col) {
-            return detail::read_a(op_a, a, lda, row, col);
-        });
-        max_row_bits = std::max(max_row_bits, rows[row].max_scaled_bits);
-    }
-    for (int col = 0; col < n; ++col) {
-        cols[col] = detail::analyze_vector(k, [&](int row) {
-            return detail::read_b(op_b, b, ldb, row, col);
-        });
-        max_col_bits = std::max(max_col_bits, cols[col].max_scaled_bits);
-    }
-
-    Plan plan;
-    plan.exact_required_bits = max_row_bits + max_col_bits +
-                               detail::ceil_log2_int(std::max(1, k)) + 1;
-    plan.planned_bits = std::max(options.target_bits, plan.exact_required_bits) +
-                        options.guard_bits;
-    plan.moduli = detail::choose_moduli(k, plan.planned_bits, options,
-                                        &plan.max_exact_modulus);
-    detail::finalize_crt_plan(plan);
-    if (plan_out != nullptr) {
-        *plan_out = plan;
-    }
-
     std::vector<double> a_mod(static_cast<std::size_t>(m) * k);
     std::vector<double> b_mod(static_cast<std::size_t>(k) * n);
     std::vector<double> c_mod(static_cast<std::size_t>(m) * n);
-    std::vector<int> residues(plan.moduli.size());
-    std::vector<int> all_residues(plan.moduli.size() * static_cast<std::size_t>(m) * n);
+    std::vector<int> residues(plan.crt.moduli.size());
+    std::vector<int> all_residues(plan.crt.moduli.size() * static_cast<std::size_t>(m) * n);
 
-    for (std::size_t imod = 0; imod < plan.moduli.size(); ++imod) {
-        const int p = plan.moduli[imod];
+    for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
+        const int p = plan.crt.moduli[imod];
 
         for (int col = 0; col < k; ++col) {
             for (int row = 0; row < m; ++row) {
                 const double value = detail::read_a(op_a, a, lda, row, col);
                 a_mod[row + col * m] = static_cast<double>(
-                    detail::scaled_double_centered_mod(value, rows[row].scale_exp, p));
+                    detail::scaled_double_centered_mod_checked(
+                        value, plan.row_scale_exp[row], plan.row_max_scaled_bits[row], p));
             }
         }
 
@@ -569,7 +631,8 @@ inline void gemm(Operation op_a, Operation op_b,
             for (int row = 0; row < k; ++row) {
                 const double value = detail::read_b(op_b, b, ldb, row, col);
                 b_mod[row + col * k] = static_cast<double>(
-                    detail::scaled_double_centered_mod(value, cols[col].scale_exp, p));
+                    detail::scaled_double_centered_mod_checked(
+                        value, plan.col_scale_exp[col], plan.col_max_scaled_bits[col], p));
             }
         }
 
@@ -593,19 +656,37 @@ inline void gemm(Operation op_a, Operation op_b,
         for (int row = 0; row < m; ++row) {
             const std::size_t idx =
                 static_cast<std::size_t>(row) + static_cast<std::size_t>(col) * m;
-            for (std::size_t imod = 0; imod < plan.moduli.size(); ++imod) {
+            for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
                 residues[imod] = all_residues[imod * static_cast<std::size_t>(m) * n + idx];
             }
 
             const detail::cpp_int crt =
-                detail::reconstruct_crt_centered(residues, plan);
-            const int restore_exp = -(rows[row].scale_exp + cols[col].scale_exp);
+                detail::reconstruct_crt_centered(residues, plan.crt);
+            const int restore_exp = -(plan.row_scale_exp[row] + plan.col_scale_exp[col]);
             const HighPrec ab = detail::scale_cpp_int_pow2<HighPrec>(crt, restore_exp);
             const std::size_t out_idx =
                 static_cast<std::size_t>(row) + static_cast<std::size_t>(col) * ldc;
             c[out_idx] = alpha * ab + beta * c[out_idx];
         }
     }
+}
+
+template <typename HighPrec>
+inline void gemm(Operation op_a, Operation op_b,
+                 int m, int n, int k,
+                 const HighPrec &alpha,
+                 const double *a, int lda,
+                 const double *b, int ldb,
+                 const HighPrec &beta,
+                 HighPrec *c, int ldc,
+                 const Options &options = Options{},
+                 Plan *plan_out = nullptr) {
+    detail::validate_options(options);
+    GemmPlan plan = make_gemm_plan(op_a, op_b, m, n, k, a, lda, b, ldb, options);
+    if (plan_out != nullptr) {
+        *plan_out = plan.crt;
+    }
+    gemm_with_plan(plan, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 template <typename HighPrec>
