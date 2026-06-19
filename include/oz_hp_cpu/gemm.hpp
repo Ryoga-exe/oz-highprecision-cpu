@@ -43,6 +43,8 @@ struct Options {
 
 struct Plan {
     std::vector<int> moduli;
+    std::vector<int> garner_inverses;
+    boost::multiprecision::cpp_int modulus_product = 1;
     int exact_required_bits = 0;
     int planned_bits = 0;
     int max_exact_modulus = 0;
@@ -362,25 +364,38 @@ inline int mod_inverse(int value, int modulus) {
     return positive_mod_int(t, modulus);
 }
 
+inline void finalize_crt_plan(Plan &plan) {
+    plan.garner_inverses.clear();
+    plan.garner_inverses.reserve(plan.moduli.size());
+    plan.modulus_product = 1;
+
+    cpp_int product = 1;
+    for (int p : plan.moduli) {
+        const int product_mod = positive_mod_int(product, p);
+        plan.garner_inverses.push_back(mod_inverse(product_mod, p));
+        product *= p;
+    }
+    plan.modulus_product = product;
+}
+
 inline cpp_int reconstruct_crt_centered(const std::vector<int> &residues,
-                                        const std::vector<int> &moduli) {
+                                        const Plan &plan) {
     cpp_int x = 0;
     cpp_int product = 1;
 
-    for (std::size_t i = 0; i < moduli.size(); ++i) {
-        const int p = moduli[i];
+    for (std::size_t i = 0; i < plan.moduli.size(); ++i) {
+        const int p = plan.moduli[i];
         const int target = positive_mod_int(residues[i], p);
         const int x_mod = positive_mod_int(x, p);
-        const int product_mod = positive_mod_int(product, p);
-        const int inv = mod_inverse(product_mod, p);
+        const int inv = plan.garner_inverses[i];
         const int delta = positive_mod_int(target - x_mod, p);
         const int coeff = static_cast<int>((static_cast<long long>(delta) * inv) % p);
         x += product * coeff;
         product *= p;
     }
 
-    if (x * 2 > product) {
-        x -= product;
+    if (x * 2 > plan.modulus_product) {
+        x -= plan.modulus_product;
     }
     return x;
 }
@@ -458,6 +473,7 @@ inline Plan make_plan(Operation op_a, Operation op_b,
                         options.guard_bits;
     plan.moduli = detail::choose_moduli(k, plan.planned_bits, options,
                                         &plan.max_exact_modulus);
+    detail::finalize_crt_plan(plan);
     return plan;
 }
 
@@ -517,6 +533,7 @@ inline void gemm(Operation op_a, Operation op_b,
                         options.guard_bits;
     plan.moduli = detail::choose_moduli(k, plan.planned_bits, options,
                                         &plan.max_exact_modulus);
+    detail::finalize_crt_plan(plan);
     if (plan_out != nullptr) {
         *plan_out = plan;
     }
@@ -571,7 +588,7 @@ inline void gemm(Operation op_a, Operation op_b,
             }
 
             const detail::cpp_int crt =
-                detail::reconstruct_crt_centered(residues, plan.moduli);
+                detail::reconstruct_crt_centered(residues, plan);
             const int restore_exp = -(rows[row].scale_exp + cols[col].scale_exp);
             const HighPrec ab = detail::scale_cpp_int_pow2<HighPrec>(crt, restore_exp);
             const std::size_t out_idx =
