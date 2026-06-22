@@ -315,6 +315,52 @@ void run_zero_vector_reuse_case() {
     check_close("zero vector reuse", c, cref, m, n, ldc);
 }
 
+void run_reuse_policy_case() {
+    constexpr int m = 1;
+    constexpr int n = 1;
+    constexpr int k = 1;
+    constexpr int lda = m;
+    constexpr int ldb = k;
+    constexpr int ldc = m;
+
+    oz_hp_cpu::Options options;
+    options.target_bits = 192;
+    options.crt_threads = 1;
+    options = oz_hp_cpu::with_reuse_policy(options, oz_hp_cpu::PlanReusePolicy::Moderate);
+    if (options.target_bits != 192 || options.crt_threads != 1 ||
+        options.reuse_scale_slack_bits <= 0 ||
+        options.reuse_magnitude_slack_bits <= 0 ||
+        options.zero_vector_scale_exp <= 0 ||
+        options.zero_vector_max_scaled_bits <= 0) {
+        throw std::runtime_error("reuse policy did not set expected options");
+    }
+
+    const std::vector<double> zero_a = {0.0};
+    const std::vector<double> b = {1.0};
+    const oz_hp_cpu::GemmPlan plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  zero_a.data(), lda,
+                                  b.data(), ldb,
+                                  options);
+
+    const std::vector<double> reuse_a = {std::ldexp(1.0, -8)};
+    std::vector<hp_t> c(1, hp_t(0));
+    std::vector<hp_t> cref(1, hp_t(0));
+    oz_hp_cpu::gemm_with_plan(plan,
+                              hp_t(1), reuse_a.data(), lda,
+                              b.data(), ldb,
+                              hp_t(0), c.data(), ldc);
+    reference_gemm(oz_hp_cpu::Operation::NoTrans,
+                   oz_hp_cpu::Operation::NoTrans,
+                   m, n, k,
+                   hp_t(1), reuse_a, lda,
+                   b, ldb,
+                   hp_t(0), cref, ldc);
+    check_close("reuse policy", c, cref, m, n, ldc);
+}
+
 void run_wide_exponent_case() {
     constexpr int m = 1;
     constexpr int n = 1;
@@ -438,6 +484,7 @@ int main() {
     run_plan_reject_case();
     run_plan_slack_case();
     run_zero_vector_reuse_case();
+    run_reuse_policy_case();
     run_wide_exponent_case();
     run_parallel_crt_case(rng);
     run_blocked_residue_case(rng);

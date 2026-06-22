@@ -37,6 +37,12 @@ enum class Operation {
     Trans
 };
 
+enum class PlanReusePolicy {
+    Strict,
+    Moderate,
+    Wide
+};
+
 struct Options {
     int target_bits = 256;
     int guard_bits = 8;
@@ -53,6 +59,30 @@ struct Options {
     // 0 selects an automatic column block size for residue GEMM/CRT.
     int residue_col_block = 0;
 };
+
+inline Options with_reuse_policy(Options options, PlanReusePolicy policy) {
+    switch (policy) {
+    case PlanReusePolicy::Strict:
+        options.reuse_scale_slack_bits = 0;
+        options.reuse_magnitude_slack_bits = 0;
+        options.zero_vector_scale_exp = 0;
+        options.zero_vector_max_scaled_bits = 0;
+        break;
+    case PlanReusePolicy::Moderate:
+        options.reuse_scale_slack_bits = 8;
+        options.reuse_magnitude_slack_bits = 8;
+        options.zero_vector_scale_exp = 64;
+        options.zero_vector_max_scaled_bits = 64;
+        break;
+    case PlanReusePolicy::Wide:
+        options.reuse_scale_slack_bits = 32;
+        options.reuse_magnitude_slack_bits = 32;
+        options.zero_vector_scale_exp = 128;
+        options.zero_vector_max_scaled_bits = 128;
+        break;
+    }
+    return options;
+}
 
 struct Plan {
     std::vector<int> moduli;

@@ -64,6 +64,10 @@ reserve bounds for rows or columns that are all zero when the plan is built.
 By default such rows/columns remain zero-only for reuse, but explicit bounds
 let a later compatible nonzero input use the same plan.
 
+`with_reuse_policy(options, PlanReusePolicy::Strict|Moderate|Wide)` applies
+reuse-policy presets. The presets leave unrelated settings such as
+`target_bits`, `crt_threads`, and `residue_col_block` unchanged.
+
 ## Why this differs from `oz-cpu`
 
 `oz-cpu` mirrors the INT8-moduli flow used by GEMMul8. This PoC instead chooses
@@ -131,5 +135,5 @@ blocks and CRT recovery is parallelized over output entries for larger blocks.
 It does reuse per-call input decompositions across moduli and caches
 power-of-two residues in reusable plans. It also caches A-side residue panels
 when the output has more than two column blocks. Obvious next steps are richer
-plan reuse policy presets, tuned residue block sizing, and CPU matrix-extension
-backends such as AMX/VNNI for smaller residues.
+application-level reuse policies, tuned residue block sizing, and CPU
+matrix-extension backends such as AMX/VNNI for smaller residues.

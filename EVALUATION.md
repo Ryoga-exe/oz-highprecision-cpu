@@ -27,6 +27,7 @@ cancellation ok: high_precision=1 fp64_left_to_right=0 moduli=10
 plan reject ok
 plan slack ok: max_abs=0 max_rel=0
 zero vector reuse ok: max_abs=0 max_rel=0
+reuse policy ok: max_abs=0 max_rel=0
 wide exponent ok: max_abs=0 max_rel=0
 parallel crt ok: max_abs=0 max_rel=0
 blocked residue ok: max_abs=0 max_rel=0
@@ -106,6 +107,9 @@ largest prime modulus actually used.
 - Rows/columns that are all zero at plan creation are zero-only by default.
   They can now reserve explicit scale and bit bounds so a later compatible
   nonzero row/column can reuse the same plan.
+- Reuse-policy presets provide `Strict`, `Moderate`, and `Wide` defaults for
+  scale slack, magnitude slack, and zero-vector reserve bounds while preserving
+  unrelated options such as precision target and thread settings.
 - Reusable plans separate input scale/CRT setup from execution. For these
   random matrices, planning is small compared with modular GEMM and CRT at
   medium sizes. Reuse output exactly matches one-shot output in these tests.
@@ -126,10 +130,10 @@ Current implementation is intentionally simple:
   products are precomputed once per plan,
 - reusable plans currently store scale bounds from a reference input and reject
   later inputs outside those bounds unless slack was reserved,
-- zero-only rows/columns can reserve bounds explicitly, but there is not yet a
-  higher-level preset for choosing those bounds automatically,
+- reuse-policy presets are intentionally simple fixed defaults, not tuned from
+  observed exponent distributions,
 - the BLAS backend here is system BLAS, not OpenBLAS/MKL/BLIS.
 
-The next performance work should focus on reusable-plan policy presets, tuned
-residue block sizing, and switching from the system BLAS to a tuned
+The next performance work should focus on application-level reuse policies,
+tuned residue block sizing, and switching from the system BLAS to a tuned
 OpenBLAS/MKL/BLIS build.
