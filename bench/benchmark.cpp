@@ -144,6 +144,7 @@ int main(int argc, char **argv) {
     std::cout << "m,n,k,moduli,exact_required_bits,planned_bits,"
               << "max_exact_modulus_bound,selected_max_modulus,"
               << "fp64_seconds,oz_seconds,plan_seconds,crt_threads,residue_col_block,"
+              << "a_residue_cached,"
               << "oz_reuse_seconds,oz_reuse_serial_seconds,"
               << "naive_hp_seconds,oz_vs_naive_max_abs,fp64_vs_oz_max_abs,"
               << "reuse_vs_oz_max_abs\n";
@@ -236,6 +237,8 @@ int main(int argc, char **argv) {
         const int selected_max_modulus = plan.moduli.empty() ? 0 : plan.moduli.front();
         const int crt_threads = oz_hp_cpu::effective_crt_threads(reusable_plan);
         const int residue_col_block = oz_hp_cpu::effective_residue_col_block(reusable_plan);
+        const int a_residue_cached =
+            oz_hp_cpu::effective_a_residue_panel_cache(reusable_plan) ? 1 : 0;
 
         std::cout << tc.m << ','
                   << tc.n << ','
@@ -250,6 +253,7 @@ int main(int argc, char **argv) {
                   << seconds_since(plan_begin, plan_end) << ','
                   << crt_threads << ','
                   << residue_col_block << ','
+                  << a_residue_cached << ','
                   << reuse_seconds << ','
                   << reuse_serial_seconds << ','
                   << naive_seconds << ','

@@ -89,8 +89,8 @@ make -C oz-highprecision-cpu test BLAS_LIBS="-lblas"
 The benchmark target runs `build/benchmark --quick` and prints CSV columns for
 FP64 BLAS time, one-shot modular/CRT time, plan construction time, reusable-plan
 execution time, serial reusable-plan execution time, residue column block size,
-optional naive Boost multiprecision time, and maximum absolute differences. Run
-the default benchmark set with:
+A-side residue panel cache status, optional naive Boost multiprecision time,
+and maximum absolute differences. Run the default benchmark set with:
 
 ```sh
 make -C oz-highprecision-cpu build/benchmark
@@ -119,7 +119,7 @@ rebuilds residue matrices for each modulus and performs scalar CRT recovery
 within each output element, though residue GEMM/CRT now run over output-column
 blocks and CRT recovery is parallelized over output entries for larger blocks.
 It does reuse per-call input decompositions across moduli and caches
-power-of-two residues in reusable plans. Obvious next steps are caching A-side
-residue panels across column blocks, richer plan reuse for repeated compatible
-inputs, and CPU matrix-extension backends such as AMX/VNNI for smaller
-residues.
+power-of-two residues in reusable plans. It also caches A-side residue panels
+when the output has more than two column blocks. Obvious next steps are richer
+plan reuse for repeated compatible inputs, tuned residue block sizing, and CPU
+matrix-extension backends such as AMX/VNNI for smaller residues.

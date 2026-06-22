@@ -314,6 +314,9 @@ void run_blocked_residue_case(std::mt19937_64 &rng) {
     if (oz_hp_cpu::effective_residue_col_block(plan) != 2) {
         throw std::runtime_error("blocked residue case did not use requested block size");
     }
+    if (!oz_hp_cpu::effective_a_residue_panel_cache(plan)) {
+        throw std::runtime_error("blocked residue case did not enable A residue panel cache");
+    }
 
     oz_hp_cpu::gemm_with_plan(plan,
                               hp_t(1), a.data(), lda,

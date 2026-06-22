@@ -630,6 +630,10 @@ inline int choose_residue_col_block(int n, int requested_block) {
     return std::min(n, 128);
 }
 
+inline bool should_cache_a_residue_panels(int n, int col_block) {
+    return col_block > 0 && n > 2 * col_block;
+}
+
 template <typename HighPrec>
 inline HighPrec scale_cpp_int_pow2(const cpp_int &value, int exponent) {
     using boost::multiprecision::ldexp;
@@ -715,6 +719,10 @@ inline int effective_residue_col_block(const GemmPlan &plan) {
     return detail::choose_residue_col_block(plan.n, plan.residue_col_block);
 }
 
+inline bool effective_a_residue_panel_cache(const GemmPlan &plan) {
+    return detail::should_cache_a_residue_panels(plan.n, effective_residue_col_block(plan));
+}
+
 template <typename HighPrec>
 inline void gemm_with_plan(const GemmPlan &plan,
                            const HighPrec &alpha,
@@ -751,7 +759,9 @@ inline void gemm_with_plan(const GemmPlan &plan,
 
     const int residue_col_block =
         detail::choose_residue_col_block(n, plan.residue_col_block);
-    std::vector<double> a_mod(static_cast<std::size_t>(m) * k);
+    const bool cache_a_residue_panels =
+        detail::should_cache_a_residue_panels(n, residue_col_block);
+    std::vector<double> a_mod_scratch(static_cast<std::size_t>(m) * k);
     std::vector<double> b_mod(static_cast<std::size_t>(k) * residue_col_block);
     std::vector<double> c_mod(static_cast<std::size_t>(m) * residue_col_block);
     std::vector<detail::ScaledDouble> a_scaled(static_cast<std::size_t>(m) * k);
@@ -775,6 +785,30 @@ inline void gemm_with_plan(const GemmPlan &plan,
         }
     }
 
+    auto build_a_mod_panel = [&](std::size_t imod, double *a_mod) {
+        const int p = plan.crt.moduli[imod];
+        const std::vector<int> &pow2_mod = plan.pow2_residues[imod];
+        for (int col = 0; col < k; ++col) {
+            for (int row = 0; row < m; ++row) {
+                a_mod[row + col * m] = static_cast<double>(
+                    detail::scaled_parts_centered_mod(
+                        a_scaled[row + col * m].parts,
+                        a_scaled[row + col * m].shift,
+                        p,
+                        pow2_mod));
+            }
+        }
+    };
+
+    std::vector<double> a_mod_panels;
+    if (cache_a_residue_panels) {
+        a_mod_panels.resize(plan.crt.moduli.size() * static_cast<std::size_t>(m) * k);
+        for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
+            build_a_mod_panel(
+                imod, a_mod_panels.data() + imod * static_cast<std::size_t>(m) * k);
+        }
+    }
+
     std::vector<int> all_residues(plan.crt.moduli.size() *
                                   static_cast<std::size_t>(m) * residue_col_block);
     for (int col_begin = 0; col_begin < n; col_begin += residue_col_block) {
@@ -784,16 +818,12 @@ inline void gemm_with_plan(const GemmPlan &plan,
         for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
             const int p = plan.crt.moduli[imod];
             const std::vector<int> &pow2_mod = plan.pow2_residues[imod];
-
-            for (int col = 0; col < k; ++col) {
-                for (int row = 0; row < m; ++row) {
-                    a_mod[row + col * m] = static_cast<double>(
-                        detail::scaled_parts_centered_mod(
-                            a_scaled[row + col * m].parts,
-                            a_scaled[row + col * m].shift,
-                            p,
-                            pow2_mod));
-                }
+            const double *a_mod = nullptr;
+            if (cache_a_residue_panels) {
+                a_mod = a_mod_panels.data() + imod * static_cast<std::size_t>(m) * k;
+            } else {
+                build_a_mod_panel(imod, a_mod_scratch.data());
+                a_mod = a_mod_scratch.data();
             }
 
             for (int local_col = 0; local_col < nb; ++local_col) {
@@ -809,7 +839,7 @@ inline void gemm_with_plan(const GemmPlan &plan,
             }
 
             detail::blas_dgemm_nn(m, nb, k,
-                                  a_mod.data(), m,
+                                  a_mod, m,
                                   b_mod.data(), k,
                                   c_mod.data(), m);
 
