@@ -54,6 +54,11 @@ forces serial reconstruction.
 building residue GEMM outputs and reconstructing CRT results. The default `0`
 uses an automatic block size.
 
+`Options::reuse_scale_slack_bits` and `Options::reuse_magnitude_slack_bits`
+reserve extra CRT width for compatible future inputs. Scale slack lets a plan
+accept finer input exponents, while magnitude slack lets it accept larger
+scaled integers within the reserved bound.
+
 ## Why this differs from `oz-cpu`
 
 `oz-cpu` mirrors the INT8-moduli flow used by GEMMul8. This PoC instead chooses
@@ -121,5 +126,5 @@ blocks and CRT recovery is parallelized over output entries for larger blocks.
 It does reuse per-call input decompositions across moduli and caches
 power-of-two residues in reusable plans. It also caches A-side residue panels
 when the output has more than two column blocks. Obvious next steps are richer
-plan reuse for repeated compatible inputs, tuned residue block sizing, and CPU
-matrix-extension backends such as AMX/VNNI for smaller residues.
+plan reuse policies for zero-only rows/columns, tuned residue block sizing, and
+CPU matrix-extension backends such as AMX/VNNI for smaller residues.

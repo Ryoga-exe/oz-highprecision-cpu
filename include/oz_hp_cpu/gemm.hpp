@@ -41,6 +41,10 @@ struct Options {
     int target_bits = 256;
     int guard_bits = 8;
     int max_moduli = 256;
+    // Extra power-of-two scale bits reserved for reusing a plan with finer inputs.
+    int reuse_scale_slack_bits = 0;
+    // Extra scaled-integer magnitude bits reserved for reusing a plan.
+    int reuse_magnitude_slack_bits = 0;
     // 0 selects an automatic thread count; 1 forces serial CRT recovery.
     int crt_threads = 0;
     // 0 selects an automatic column block size for residue GEMM/CRT.
@@ -99,6 +103,12 @@ inline void validate_options(const Options &options) {
     }
     if (options.max_moduli < 1) {
         throw std::invalid_argument("max_moduli must be >= 1");
+    }
+    if (options.reuse_scale_slack_bits < 0) {
+        throw std::invalid_argument("reuse_scale_slack_bits must be >= 0");
+    }
+    if (options.reuse_magnitude_slack_bits < 0) {
+        throw std::invalid_argument("reuse_magnitude_slack_bits must be >= 0");
     }
     if (options.crt_threads < 0) {
         throw std::invalid_argument("crt_threads must be >= 0");
@@ -654,19 +664,15 @@ inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
     std::vector<detail::VectorScale> rows(static_cast<std::size_t>(m));
     std::vector<detail::VectorScale> cols(static_cast<std::size_t>(n));
 
-    int max_row_bits = 0;
-    int max_col_bits = 0;
     for (int row = 0; row < m; ++row) {
         rows[row] = detail::analyze_vector(k, [&](int col) {
             return detail::read_a(op_a, a, lda, row, col);
         });
-        max_row_bits = std::max(max_row_bits, rows[row].max_scaled_bits);
     }
     for (int col = 0; col < n; ++col) {
         cols[col] = detail::analyze_vector(k, [&](int row) {
             return detail::read_b(op_b, b, ldb, row, col);
         });
-        max_col_bits = std::max(max_col_bits, cols[col].max_scaled_bits);
     }
 
     GemmPlan plan;
@@ -681,13 +687,27 @@ inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
     plan.col_scale_exp.resize(static_cast<std::size_t>(n));
     plan.row_max_scaled_bits.resize(static_cast<std::size_t>(m));
     plan.col_max_scaled_bits.resize(static_cast<std::size_t>(n));
+    int max_row_bits = 0;
+    int max_col_bits = 0;
     for (int row = 0; row < m; ++row) {
         plan.row_scale_exp[row] = rows[row].scale_exp;
         plan.row_max_scaled_bits[row] = rows[row].max_scaled_bits;
+        if (rows[row].max_scaled_bits > 0) {
+            plan.row_scale_exp[row] += options.reuse_scale_slack_bits;
+            plan.row_max_scaled_bits[row] += options.reuse_scale_slack_bits +
+                                             options.reuse_magnitude_slack_bits;
+        }
+        max_row_bits = std::max(max_row_bits, plan.row_max_scaled_bits[row]);
     }
     for (int col = 0; col < n; ++col) {
         plan.col_scale_exp[col] = cols[col].scale_exp;
         plan.col_max_scaled_bits[col] = cols[col].max_scaled_bits;
+        if (cols[col].max_scaled_bits > 0) {
+            plan.col_scale_exp[col] += options.reuse_scale_slack_bits;
+            plan.col_max_scaled_bits[col] += options.reuse_scale_slack_bits +
+                                             options.reuse_magnitude_slack_bits;
+        }
+        max_col_bits = std::max(max_col_bits, plan.col_max_scaled_bits[col]);
     }
 
     plan.crt.exact_required_bits = max_row_bits + max_col_bits +

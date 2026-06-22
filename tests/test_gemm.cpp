@@ -217,6 +217,44 @@ void run_plan_reject_case() {
     std::cout << "plan reject ok\n";
 }
 
+void run_plan_slack_case() {
+    constexpr int m = 1;
+    constexpr int n = 1;
+    constexpr int k = 1;
+    constexpr int lda = m;
+    constexpr int ldb = k;
+    constexpr int ldc = m;
+
+    const std::vector<double> a = {1.0};
+    const std::vector<double> b = {1.0};
+    oz_hp_cpu::Options options;
+    options.reuse_scale_slack_bits = 1;
+    options.reuse_magnitude_slack_bits = 1;
+    const oz_hp_cpu::GemmPlan plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb,
+                                  options);
+
+    const std::vector<double> reuse_a = {0.5};
+    const std::vector<double> reuse_b = {2.0};
+    std::vector<hp_t> c(1, hp_t(0));
+    std::vector<hp_t> cref(1, hp_t(0));
+    oz_hp_cpu::gemm_with_plan(plan,
+                              hp_t(1), reuse_a.data(), lda,
+                              reuse_b.data(), ldb,
+                              hp_t(0), c.data(), ldc);
+    reference_gemm(oz_hp_cpu::Operation::NoTrans,
+                   oz_hp_cpu::Operation::NoTrans,
+                   m, n, k,
+                   hp_t(1), reuse_a, lda,
+                   reuse_b, ldb,
+                   hp_t(0), cref, ldc);
+    check_close("plan slack", c, cref, m, n, ldc);
+}
+
 void run_wide_exponent_case() {
     constexpr int m = 1;
     constexpr int n = 1;
@@ -338,6 +376,7 @@ int main() {
 
     run_cancellation_case();
     run_plan_reject_case();
+    run_plan_slack_case();
     run_wide_exponent_case();
     run_parallel_crt_case(rng);
     run_blocked_residue_case(rng);
