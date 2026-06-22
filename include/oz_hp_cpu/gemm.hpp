@@ -45,6 +45,9 @@ struct Options {
     int reuse_scale_slack_bits = 0;
     // Extra scaled-integer magnitude bits reserved for reusing a plan.
     int reuse_magnitude_slack_bits = 0;
+    // Bounds assigned to rows/columns that are all zero at plan creation.
+    int zero_vector_scale_exp = 0;
+    int zero_vector_max_scaled_bits = 0;
     // 0 selects an automatic thread count; 1 forces serial CRT recovery.
     int crt_threads = 0;
     // 0 selects an automatic column block size for residue GEMM/CRT.
@@ -109,6 +112,12 @@ inline void validate_options(const Options &options) {
     }
     if (options.reuse_magnitude_slack_bits < 0) {
         throw std::invalid_argument("reuse_magnitude_slack_bits must be >= 0");
+    }
+    if (options.zero_vector_scale_exp < 0) {
+        throw std::invalid_argument("zero_vector_scale_exp must be >= 0");
+    }
+    if (options.zero_vector_max_scaled_bits < 0) {
+        throw std::invalid_argument("zero_vector_max_scaled_bits must be >= 0");
     }
     if (options.crt_threads < 0) {
         throw std::invalid_argument("crt_threads must be >= 0");
@@ -696,6 +705,9 @@ inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
             plan.row_scale_exp[row] += options.reuse_scale_slack_bits;
             plan.row_max_scaled_bits[row] += options.reuse_scale_slack_bits +
                                              options.reuse_magnitude_slack_bits;
+        } else if (options.zero_vector_max_scaled_bits > 0) {
+            plan.row_scale_exp[row] = options.zero_vector_scale_exp;
+            plan.row_max_scaled_bits[row] = options.zero_vector_max_scaled_bits;
         }
         max_row_bits = std::max(max_row_bits, plan.row_max_scaled_bits[row]);
     }
@@ -706,6 +718,9 @@ inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
             plan.col_scale_exp[col] += options.reuse_scale_slack_bits;
             plan.col_max_scaled_bits[col] += options.reuse_scale_slack_bits +
                                              options.reuse_magnitude_slack_bits;
+        } else if (options.zero_vector_max_scaled_bits > 0) {
+            plan.col_scale_exp[col] = options.zero_vector_scale_exp;
+            plan.col_max_scaled_bits[col] = options.zero_vector_max_scaled_bits;
         }
         max_col_bits = std::max(max_col_bits, plan.col_max_scaled_bits[col]);
     }

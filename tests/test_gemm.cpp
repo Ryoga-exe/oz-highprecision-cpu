@@ -255,6 +255,66 @@ void run_plan_slack_case() {
     check_close("plan slack", c, cref, m, n, ldc);
 }
 
+void run_zero_vector_reuse_case() {
+    constexpr int m = 1;
+    constexpr int n = 1;
+    constexpr int k = 1;
+    constexpr int lda = m;
+    constexpr int ldb = k;
+    constexpr int ldc = m;
+
+    const std::vector<double> zero_a = {0.0};
+    const std::vector<double> zero_b = {0.0};
+    const std::vector<double> reuse_a = {0.5};
+    const std::vector<double> reuse_b = {1.0};
+
+    const oz_hp_cpu::GemmPlan strict_plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  zero_a.data(), lda,
+                                  zero_b.data(), ldb);
+
+    std::vector<hp_t> c(1, hp_t(0));
+    bool rejected = false;
+    try {
+        oz_hp_cpu::gemm_with_plan(strict_plan,
+                                  hp_t(1), reuse_a.data(), lda,
+                                  reuse_b.data(), ldb,
+                                  hp_t(0), c.data(), ldc);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    if (!rejected) {
+        throw std::runtime_error("zero-vector plan accepted nonzero input without reserve");
+    }
+
+    oz_hp_cpu::Options options;
+    options.zero_vector_scale_exp = 1;
+    options.zero_vector_max_scaled_bits = 2;
+    const oz_hp_cpu::GemmPlan reserved_plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  zero_a.data(), lda,
+                                  zero_b.data(), ldb,
+                                  options);
+
+    std::vector<hp_t> cref(1, hp_t(0));
+    c[0] = hp_t(0);
+    oz_hp_cpu::gemm_with_plan(reserved_plan,
+                              hp_t(1), reuse_a.data(), lda,
+                              reuse_b.data(), ldb,
+                              hp_t(0), c.data(), ldc);
+    reference_gemm(oz_hp_cpu::Operation::NoTrans,
+                   oz_hp_cpu::Operation::NoTrans,
+                   m, n, k,
+                   hp_t(1), reuse_a, lda,
+                   reuse_b, ldb,
+                   hp_t(0), cref, ldc);
+    check_close("zero vector reuse", c, cref, m, n, ldc);
+}
+
 void run_wide_exponent_case() {
     constexpr int m = 1;
     constexpr int n = 1;
@@ -377,6 +437,7 @@ int main() {
     run_cancellation_case();
     run_plan_reject_case();
     run_plan_slack_case();
+    run_zero_vector_reuse_case();
     run_wide_exponent_case();
     run_parallel_crt_case(rng);
     run_blocked_residue_case(rng);
