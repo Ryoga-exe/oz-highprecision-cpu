@@ -52,7 +52,8 @@ forces serial reconstruction.
 
 `Options::residue_col_block` controls the output-column block size used while
 building residue GEMM outputs and reconstructing CRT results. The default `0`
-uses an automatic block size.
+uses an automatic block size. `Options::residue_target_bytes` controls the
+temporary-memory target used by that automatic selector.
 
 `Options::reuse_scale_slack_bits` and `Options::reuse_magnitude_slack_bits`
 reserve extra CRT width for compatible future inputs. Scale slack lets a plan
@@ -135,5 +136,6 @@ blocks and CRT recovery is parallelized over output entries for larger blocks.
 It does reuse per-call input decompositions across moduli and caches
 power-of-two residues in reusable plans. It also caches A-side residue panels
 when the output has more than two column blocks. Obvious next steps are richer
-application-level reuse policies, tuned residue block sizing, and CPU
-matrix-extension backends such as AMX/VNNI for smaller residues.
+application-level reuse policies, empirical block-size tuning against tuned
+BLAS libraries, and CPU matrix-extension backends such as AMX/VNNI for smaller
+residues.

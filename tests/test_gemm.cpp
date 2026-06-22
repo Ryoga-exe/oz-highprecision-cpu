@@ -475,6 +475,45 @@ void run_blocked_residue_case(std::mt19937_64 &rng) {
     check_close("blocked residue", c, cref, m, n, ldc);
 }
 
+void run_residue_block_sizing_case(std::mt19937_64 &rng) {
+    constexpr int m = 4;
+    constexpr int n = 300;
+    constexpr int k = 3;
+    constexpr int lda = m;
+    constexpr int ldb = k;
+
+    std::vector<double> a = random_matrix(m, k, lda, rng);
+    std::vector<double> b = random_matrix(k, n, ldb, rng);
+
+    oz_hp_cpu::GemmPlan default_plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb);
+    if (oz_hp_cpu::effective_residue_col_block(default_plan) != 256) {
+        throw std::runtime_error("default residue block size was not tuned to 256");
+    }
+
+    oz_hp_cpu::Options small_budget;
+    small_budget.residue_target_bytes = 1024;
+    oz_hp_cpu::GemmPlan small_budget_plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb,
+                                  small_budget);
+    if (oz_hp_cpu::effective_residue_col_block(small_budget_plan) >= 256) {
+        throw std::runtime_error("small residue target did not reduce block size");
+    }
+
+    std::cout << "residue block sizing ok: default="
+              << oz_hp_cpu::effective_residue_col_block(default_plan)
+              << " small_budget="
+              << oz_hp_cpu::effective_residue_col_block(small_budget_plan) << '\n';
+}
+
 } // namespace
 
 int main() {
@@ -488,6 +527,7 @@ int main() {
     run_wide_exponent_case();
     run_parallel_crt_case(rng);
     run_blocked_residue_case(rng);
+    run_residue_block_sizing_case(rng);
     run_random_case("nn", oz_hp_cpu::Operation::NoTrans,
                     oz_hp_cpu::Operation::NoTrans, 5, 4, 7, rng);
     run_random_case("tn", oz_hp_cpu::Operation::Trans,

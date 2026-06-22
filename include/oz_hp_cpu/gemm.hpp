@@ -58,6 +58,8 @@ struct Options {
     int crt_threads = 0;
     // 0 selects an automatic column block size for residue GEMM/CRT.
     int residue_col_block = 0;
+    // Target temporary bytes for automatic residue column block sizing.
+    int residue_target_bytes = 8 * 1024 * 1024;
 };
 
 inline Options with_reuse_policy(Options options, PlanReusePolicy policy) {
@@ -109,6 +111,7 @@ struct GemmPlan {
     std::vector<std::vector<int>> pow2_residues;
     int crt_threads = 0;
     int residue_col_block = 0;
+    int residue_target_bytes = 8 * 1024 * 1024;
 };
 
 namespace detail {
@@ -154,6 +157,9 @@ inline void validate_options(const Options &options) {
     }
     if (options.residue_col_block < 0) {
         throw std::invalid_argument("residue_col_block must be >= 0");
+    }
+    if (options.residue_target_bytes < 1) {
+        throw std::invalid_argument("residue_target_bytes must be >= 1");
     }
 }
 
@@ -647,6 +653,9 @@ inline void validate_gemm_plan(const GemmPlan &plan,
     if (plan.residue_col_block < 0) {
         throw std::invalid_argument("GemmPlan has invalid residue column block size");
     }
+    if (plan.residue_target_bytes < 1) {
+        throw std::invalid_argument("GemmPlan has invalid residue target byte count");
+    }
     for (const std::vector<int> &table : plan.pow2_residues) {
         if (table.size() != static_cast<std::size_t>(plan.max_pow2_shift) + 1) {
             throw std::invalid_argument("GemmPlan has invalid pow2 residue table size");
@@ -669,14 +678,38 @@ inline int choose_crt_threads(std::size_t output_size, int requested_threads) {
     return threads;
 }
 
-inline int choose_residue_col_block(int n, int requested_block) {
+inline int choose_residue_col_block(int m,
+                                    int n,
+                                    int k,
+                                    std::size_t moduli_count,
+                                    int requested_block,
+                                    int target_bytes) {
     if (n <= 0) {
         return 0;
     }
     if (requested_block > 0) {
         return std::min(n, requested_block);
     }
-    return std::min(n, 128);
+
+    const std::size_t safe_m = static_cast<std::size_t>(std::max(1, m));
+    const std::size_t safe_k = static_cast<std::size_t>(std::max(1, k));
+    const std::size_t safe_moduli = std::max<std::size_t>(1, moduli_count);
+    const std::size_t bytes_per_col =
+        sizeof(double) * safe_k + sizeof(double) * safe_m + sizeof(int) * safe_moduli * safe_m;
+    const std::size_t budget = static_cast<std::size_t>(std::max(1, target_bytes));
+    const std::size_t max_cols_by_budget = std::max<std::size_t>(1, budget / bytes_per_col);
+
+    if (static_cast<std::size_t>(n) <= max_cols_by_budget && n <= 256) {
+        return n;
+    }
+
+    static constexpr int candidates[] = {256, 128, 64, 32, 16, 8, 4, 2, 1};
+    for (int candidate : candidates) {
+        if (candidate <= n && static_cast<std::size_t>(candidate) <= max_cols_by_budget) {
+            return candidate;
+        }
+    }
+    return 1;
 }
 
 inline bool should_cache_a_residue_panels(int n, int col_block) {
@@ -722,6 +755,7 @@ inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
     plan.k = k;
     plan.crt_threads = options.crt_threads;
     plan.residue_col_block = options.residue_col_block;
+    plan.residue_target_bytes = options.residue_target_bytes;
     plan.row_scale_exp.resize(static_cast<std::size_t>(m));
     plan.col_scale_exp.resize(static_cast<std::size_t>(n));
     plan.row_max_scaled_bits.resize(static_cast<std::size_t>(m));
@@ -775,13 +809,24 @@ inline Plan make_plan(Operation op_a, Operation op_b,
 }
 
 inline int effective_crt_threads(const GemmPlan &plan) {
-    const int col_block = detail::choose_residue_col_block(plan.n, plan.residue_col_block);
+    const int col_block =
+        detail::choose_residue_col_block(plan.m,
+                                         plan.n,
+                                         plan.k,
+                                         plan.crt.moduli.size(),
+                                         plan.residue_col_block,
+                                         plan.residue_target_bytes);
     return detail::choose_crt_threads(static_cast<std::size_t>(plan.m) * col_block,
                                       plan.crt_threads);
 }
 
 inline int effective_residue_col_block(const GemmPlan &plan) {
-    return detail::choose_residue_col_block(plan.n, plan.residue_col_block);
+    return detail::choose_residue_col_block(plan.m,
+                                            plan.n,
+                                            plan.k,
+                                            plan.crt.moduli.size(),
+                                            plan.residue_col_block,
+                                            plan.residue_target_bytes);
 }
 
 inline bool effective_a_residue_panel_cache(const GemmPlan &plan) {
@@ -823,7 +868,12 @@ inline void gemm_with_plan(const GemmPlan &plan,
     }
 
     const int residue_col_block =
-        detail::choose_residue_col_block(n, plan.residue_col_block);
+        detail::choose_residue_col_block(m,
+                                         n,
+                                         k,
+                                         plan.crt.moduli.size(),
+                                         plan.residue_col_block,
+                                         plan.residue_target_bytes);
     const bool cache_a_residue_panels =
         detail::should_cache_a_residue_panels(n, residue_col_block);
     std::vector<double> a_mod_scratch(static_cast<std::size_t>(m) * k);

@@ -31,6 +31,7 @@ reuse policy ok: max_abs=0 max_rel=0
 wide exponent ok: max_abs=0 max_rel=0
 parallel crt ok: max_abs=0 max_rel=0
 blocked residue ok: max_abs=0 max_rel=0
+residue block sizing ok: default=256 small_budget=4
 nn ok: max_abs=0 max_rel=0
 nn reusable plan ok: max_abs=0 max_rel=0
 tn ok: max_abs=0 max_rel=0
@@ -60,20 +61,21 @@ CSV output:
 
 ```text
 m,n,k,moduli,exact_required_bits,planned_bits,max_exact_modulus_bound,selected_max_modulus,fp64_seconds,oz_seconds,plan_seconds,crt_threads,residue_col_block,a_residue_cached,oz_reuse_seconds,oz_reuse_serial_seconds,naive_hp_seconds,oz_vs_naive_max_abs,fp64_vs_oz_max_abs,reuse_vs_oz_max_abs
-8,8,8,11,110,264,67108862,67108859,3.61e-06,0.000151016,3.5113e-05,1,8,0,9.1536e-05,9.0136e-05,0.000221686,0,3.71258675529e-16,0
-16,16,16,11,111,264,47453131,47453111,2.266e-06,0.000437505,4.1891e-05,1,16,0,0.000376009,0.0004123,0.001500536,0,7.59906913097e-16,0
-32,32,32,11,112,264,33554430,33554393,1.5426e-05,0.001764177,6.4327e-05,1,32,0,0.0016545,0.001613033,0.011974552,0,2.43739505418e-15,0
-64,64,64,11,113,264,23726565,23726561,0.000120329,0.004227071,0.000146361,8,64,0,0.004249785,0.007585041,-1,-1,4.82793210353e-15,0
-96,96,96,11,114,264,19372659,19372651,0.000431234,0.011524931,0.00028474,8,96,0,0.011116239,0.018668066,-1,-1,1.04819437783e-14,0
+8,8,8,11,110,264,67108862,67108859,3.768e-06,0.000149423,3.4274e-05,1,8,0,9.1548e-05,9.0671e-05,0.000235943,0,3.71258675529e-16,0
+16,16,16,11,111,264,47453131,47453111,2.164e-06,0.000432232,4.1162e-05,1,16,0,0.00037061,0.000420648,0.001490832,0,7.59906913097e-16,0
+32,32,32,11,112,264,33554430,33554393,1.4941e-05,0.001733113,6.2743e-05,1,32,0,0.001657423,0.001674872,0.011964541,0,2.43739505418e-15,0
+64,64,64,11,113,264,23726565,23726561,0.000124509,0.004549013,0.000148223,8,64,0,0.00419422,0.007561393,-1,-1,4.82793210353e-15,0
+96,96,96,11,114,264,19372659,19372651,0.000497755,0.011549213,0.000333304,8,96,0,0.011132054,0.019072199,-1,-1,1.04819437783e-14,0
 ```
 
 Additional cases with naive Boost multiprecision enabled:
 
 ```text
 m,n,k,moduli,exact_required_bits,planned_bits,max_exact_modulus_bound,selected_max_modulus,fp64_seconds,oz_seconds,plan_seconds,crt_threads,residue_col_block,a_residue_cached,oz_reuse_seconds,oz_reuse_serial_seconds,naive_hp_seconds,oz_vs_naive_max_abs,fp64_vs_oz_max_abs,reuse_vs_oz_max_abs
-64,64,64,11,113,264,23726565,23726561,0.000126275,0.005144961,0.000160159,8,64,0,0.004672446,0.007575163,0.100230841,0,4.59062343515e-15,0
-128,128,128,12,114,264,16777214,16777213,0.001072061,0.027225247,0.000507346,8,128,0,0.026493412,0.03945041,0.763885857,0,1.12859793792e-14,0
-64,512,64,11,113,264,23726565,23726561,0.001038837,0.034183309,0.000573389,8,128,1,0.032906646,0.053194223,0.757955247,0,6.25928911874e-15,0
+64,64,64,11,113,264,23726565,23726561,0.00012819,0.005075343,0.000151928,8,64,0,0.004769681,0.007632965,0.100856821,0,4.59062343515e-15,0
+128,128,128,12,114,264,16777214,16777213,0.001077992,0.027387371,0.00051329,8,128,0,0.026315556,0.040008881,0.76524883,0,1.12859793792e-14,0
+64,512,64,11,113,264,23726565,23726561,0.001026902,0.033664041,0.000623134,8,256,0,0.032676907,0.054333682,0.760407014,0,6.25928911874e-15,0
+64,768,64,11,113,264,23726565,23726561,0.001511435,0.040968753,0.00088436,8,256,1,0.040509639,0.079773932,1.11972198,0,6.25928911874e-15,0
 ```
 
 `max_exact_modulus_bound` is the largest integer allowed by the exact FP64
@@ -89,17 +91,17 @@ largest prime modulus actually used.
   quickly with size.
 - With CRT/Garner inverse precomputation, reusable plans, the int64 residue
   fast path, per-call input decomposition reuse, and precomputed powers of two
-  modulo each prime, reusable-plan execution is about `21.5x` faster than
-  naive Boost at `64x64x64` and about `28.8x` faster at `128x128x128`.
+  modulo each prime, reusable-plan execution is about `21.1x` faster than
+  naive Boost at `64x64x64` and about `29.1x` faster at `128x128x128`.
 - Parallel CRT recovery uses 8 threads in this environment for outputs with at
   least 4096 entries. In the default run, reusable execution is about `1.8x`
   faster than serial CRT at `64x64x64` and about `1.7x` faster at `96x96x96`.
 - Residue GEMM and CRT recovery now operate on output-column blocks. The
-  default automatic block size is the full `n` for these default cases and 128
-  columns for the `64x512x64` case, reducing temporary residue storage without
-  changing numerical results.
+  automatic selector uses a temporary-memory target and picks the full `n` for
+  these default cases and 256 columns for the wider `64x512x64` and
+  `64x768x64` cases.
 - A-side residue panels are cached when the output spans more than two column
-  blocks. That path is active in the `64x512x64` case above and avoids
+  blocks. That path is active in the `64x768x64` case above and avoids
   regenerating the same A residues for each block.
 - Reusable plans can reserve scale and magnitude slack. This lets a plan accept
   later inputs with finer exponents or larger scaled integers, while increasing
@@ -130,10 +132,10 @@ Current implementation is intentionally simple:
   products are precomputed once per plan,
 - reusable plans currently store scale bounds from a reference input and reject
   later inputs outside those bounds unless slack was reserved,
-- reuse-policy presets are intentionally simple fixed defaults, not tuned from
-  observed exponent distributions,
+- automatic residue block sizing uses a simple memory-budget heuristic rather
+  than empirical tuning for the active BLAS backend,
 - the BLAS backend here is system BLAS, not OpenBLAS/MKL/BLIS.
 
 The next performance work should focus on application-level reuse policies,
-tuned residue block sizing, and switching from the system BLAS to a tuned
-OpenBLAS/MKL/BLIS build.
+empirical block-size tuning against tuned BLAS libraries, and switching from
+the system BLAS to a tuned OpenBLAS/MKL/BLIS build.
