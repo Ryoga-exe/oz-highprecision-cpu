@@ -161,7 +161,8 @@ path reconstructs the exact `double` input result `1`.
 This is a correctness-oriented PoC, not a tuned implementation. It currently
 rebuilds residue matrices for each modulus and performs scalar CRT recovery
 within each output element, though residue GEMM/CRT now run over output-column
-blocks and CRT recovery is parallelized over output entries for larger blocks.
+blocks, CRT recovery reads blocked residues directly, and CRT recovery is
+parallelized over output entries for larger blocks.
 It does reuse per-call input decompositions across moduli and caches
 power-of-two residues in reusable plans. It also caches A-side residue panels
 when the output has more than two column blocks. Obvious next steps are richer

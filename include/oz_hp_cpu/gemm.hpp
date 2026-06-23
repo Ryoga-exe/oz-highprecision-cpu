@@ -485,14 +485,15 @@ inline void finalize_crt_plan(Plan &plan) {
     plan.modulus_product = product;
 }
 
-inline cpp_int reconstruct_crt_centered(const std::vector<int> &residues,
-                                        const Plan &plan) {
+inline cpp_int reconstruct_crt_centered_strided(const int *residues,
+                                                std::size_t stride,
+                                                const Plan &plan) {
     cpp_int x = 0;
     cpp_int product = 1;
 
     for (std::size_t i = 0; i < plan.moduli.size(); ++i) {
         const int p = plan.moduli[i];
-        const int target = positive_mod_int(residues[i], p);
+        const int target = positive_mod_int(residues[i * stride], p);
         const int x_mod = positive_mod_int(x, p);
         const int inv = plan.garner_inverses[i];
         const int delta = positive_mod_int(target - x_mod, p);
@@ -505,6 +506,11 @@ inline cpp_int reconstruct_crt_centered(const std::vector<int> &residues,
         x -= plan.modulus_product;
     }
     return x;
+}
+
+inline cpp_int reconstruct_crt_centered(const std::vector<int> &residues,
+                                        const Plan &plan) {
+    return reconstruct_crt_centered_strided(residues.data(), 1, plan);
 }
 
 inline int scaled_parts_centered_mod(const DoubleParts &p, int shift, int modulus) {
@@ -1051,17 +1057,14 @@ inline void gemm_with_plan(const GemmPlan &plan,
             stats->crt_threads = std::max(stats->crt_threads, crt_threads);
         }
         auto reconstruct_range = [&](std::size_t begin, std::size_t end) {
-            std::vector<int> thread_residues(plan.crt.moduli.size());
             for (std::size_t idx = begin; idx < end; ++idx) {
                 const int row = static_cast<int>(idx % static_cast<std::size_t>(m));
                 const int local_col = static_cast<int>(idx / static_cast<std::size_t>(m));
                 const int global_col = col_begin + local_col;
-                for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
-                    thread_residues[imod] = all_residues[imod * block_output_size + idx];
-                }
 
                 const detail::cpp_int crt =
-                    detail::reconstruct_crt_centered(thread_residues, plan.crt);
+                    detail::reconstruct_crt_centered_strided(
+                        all_residues.data() + idx, block_output_size, plan.crt);
                 const int restore_exp =
                     -(plan.row_scale_exp[row] + plan.col_scale_exp[global_col]);
                 const HighPrec ab = detail::scale_cpp_int_pow2<HighPrec>(crt, restore_exp);
