@@ -21,5 +21,6 @@ for backend in "${backends[@]}"; do
     build/benchmark --quick
     build/benchmark --sweep-blocks 64 512 64
     build/benchmark --sweep-crt-threads 64 512 64
+    build/benchmark --sweep-precision 64 64 64
     echo
 done

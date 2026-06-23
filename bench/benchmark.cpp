@@ -134,7 +134,7 @@ std::vector<Case> parse_cases(int argc, char **argv) {
     }
     throw std::invalid_argument(
         "usage: benchmark [--quick|--one M N K|--sweep-blocks M N K|"
-        "--sweep-crt-threads M N K|--profile M N K]");
+        "--sweep-crt-threads M N K|--sweep-precision M N K|--profile M N K]");
 }
 
 void run_block_sweep(int m, int n, int k) {
@@ -301,6 +301,111 @@ void run_crt_thread_sweep(int m, int n, int k) {
     }
 }
 
+void run_precision_sweep(int m, int n, int k) {
+    std::mt19937_64 rng(0x61282024);
+    oz_hp_cpu::Options base_options;
+    base_options.guard_bits = 8;
+
+    const int lda = m;
+    const int ldb = k;
+    const int ldc = m;
+    std::vector<double> a = random_matrix(m, k, lda, rng);
+    std::vector<double> b = random_matrix(k, n, ldb, rng);
+
+    oz_hp_cpu::Options reference_options = base_options;
+    reference_options.target_bits = 256;
+    oz_hp_cpu::GemmPlan reference_plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb,
+                                  reference_options);
+    std::vector<hp_t> c_reference(static_cast<std::size_t>(ldc) * n, hp_t(0));
+    oz_hp_cpu::gemm_with_plan(reference_plan,
+                              hp_t(1), a.data(), lda,
+                              b.data(), ldb,
+                              hp_t(0), c_reference.data(), ldc);
+
+    std::cout << "m,n,k,target_bits,guard_bits,moduli,exact_required_bits,planned_bits,"
+              << "max_exact_modulus_bound,selected_max_modulus,total_seconds,"
+              << "residue_seconds,blas_seconds,crt_seconds,residue_fraction,blas_fraction,"
+              << "crt_fraction,residue_gemm_calls,vs_target256_max_abs\n";
+    std::cout << std::setprecision(12);
+
+    const int target_bits_values[] = {64, 96, 128, 160, 192, 224, 256, 320, 384};
+    const int repeats = (m * n <= 65536) ? 3 : 1;
+    for (int target_bits : target_bits_values) {
+        oz_hp_cpu::Options options = base_options;
+        options.target_bits = target_bits;
+
+        oz_hp_cpu::GemmPlan plan =
+            oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                      oz_hp_cpu::Operation::NoTrans,
+                                      m, n, k,
+                                      a.data(), lda,
+                                      b.data(), ldb,
+                                      options);
+
+        std::vector<hp_t> c(static_cast<std::size_t>(ldc) * n, hp_t(0));
+        std::vector<oz_hp_cpu::GemmExecutionStats> stats_samples;
+        stats_samples.reserve(static_cast<std::size_t>(repeats));
+        for (int repeat = 0; repeat < repeats; ++repeat) {
+            std::fill(c.begin(), c.end(), hp_t(0));
+            oz_hp_cpu::GemmExecutionStats stats;
+            oz_hp_cpu::gemm_with_plan(plan,
+                                      hp_t(1), a.data(), lda,
+                                      b.data(), ldb,
+                                      hp_t(0), c.data(), ldc,
+                                      &stats);
+            stats_samples.push_back(stats);
+        }
+
+        auto median_stat = [&](double oz_hp_cpu::GemmExecutionStats::*field) {
+            std::vector<double> values;
+            values.reserve(stats_samples.size());
+            for (const oz_hp_cpu::GemmExecutionStats &stats : stats_samples) {
+                values.push_back(stats.*field);
+            }
+            return median(values);
+        };
+
+        const oz_hp_cpu::GemmExecutionStats &last = stats_samples.back();
+        const double total_seconds = median_stat(&oz_hp_cpu::GemmExecutionStats::total_seconds);
+        const double a_residue_seconds =
+            median_stat(&oz_hp_cpu::GemmExecutionStats::a_residue_seconds);
+        const double b_residue_seconds =
+            median_stat(&oz_hp_cpu::GemmExecutionStats::b_residue_seconds);
+        const double residue_store_seconds =
+            median_stat(&oz_hp_cpu::GemmExecutionStats::residue_store_seconds);
+        const double residue_seconds =
+            a_residue_seconds + b_residue_seconds + residue_store_seconds;
+        const double blas_seconds = median_stat(&oz_hp_cpu::GemmExecutionStats::blas_seconds);
+        const double crt_seconds = median_stat(&oz_hp_cpu::GemmExecutionStats::crt_seconds);
+        const int selected_max_modulus = plan.crt.moduli.empty() ? 0 : plan.crt.moduli.front();
+
+        std::cout << m << ','
+                  << n << ','
+                  << k << ','
+                  << target_bits << ','
+                  << options.guard_bits << ','
+                  << plan.crt.moduli.size() << ','
+                  << plan.crt.exact_required_bits << ','
+                  << plan.crt.planned_bits << ','
+                  << plan.crt.max_exact_modulus << ','
+                  << selected_max_modulus << ','
+                  << total_seconds << ','
+                  << residue_seconds << ','
+                  << blas_seconds << ','
+                  << crt_seconds << ','
+                  << fraction_or_zero(residue_seconds, total_seconds) << ','
+                  << fraction_or_zero(blas_seconds, total_seconds) << ','
+                  << fraction_or_zero(crt_seconds, total_seconds) << ','
+                  << last.residue_gemm_calls << ','
+                  << max_abs_diff_hp(c, c_reference) << '\n';
+    }
+}
+
 void run_profile(int m, int n, int k) {
     std::mt19937_64 rng(0x61282024);
     oz_hp_cpu::Options options;
@@ -412,6 +517,13 @@ int main(int argc, char **argv) {
             throw std::invalid_argument("usage: benchmark --sweep-crt-threads M N K");
         }
         run_crt_thread_sweep(std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]));
+        return 0;
+    }
+    if (argc > 1 && std::string(argv[1]) == "--sweep-precision") {
+        if (argc != 5) {
+            throw std::invalid_argument("usage: benchmark --sweep-precision M N K");
+        }
+        run_precision_sweep(std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]));
         return 0;
     }
     if (argc > 1 && std::string(argv[1]) == "--profile") {
