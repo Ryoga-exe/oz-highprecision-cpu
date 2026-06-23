@@ -135,10 +135,10 @@ Representative reusable-plan phase breakdowns:
 
 ```text
 m,n,k,moduli,total_seconds,input_prepare_seconds,a_residue_seconds,b_residue_seconds,blas_seconds,residue_store_seconds,crt_seconds,residue_fraction,blas_fraction,crt_fraction,residue_col_block,a_residue_cached,crt_threads,output_blocks,residue_gemm_calls
-64,64,64,11,0.00480298,0.000113426,0.000643012,0.000680529,0.001417878,0.000484852,0.001369942,0.376514788735,0.295207975049,0.285227504591,64,0,8,1,11
-128,128,128,12,0.025152896,0.000475307,0.002830023,0.002964616,0.013143027,0.002090398,0.003006175,0.313484260421,0.522525398268,0.119516058906,128,0,8,1,12
-64,512,64,11,0.028009466,0.000530114,0.001251814,0.005756637,0.011008654,0.003681065,0.005177021,0.381639407192,0.393033340943,0.184831121022,256,0,8,2,22
-64,768,64,11,0.040046608,0.00078069,0.000630203,0.008103371,0.016642813,0.005687695,0.007422375,0.360112122355,0.415586084095,0.185343412855,256,1,8,3,33
+64,64,64,11,0.004233301,0.000113229,0.000655418,0.000664162,0.00138225,0.000336328,0.000857498,0.391162357697,0.326518241911,0.20256012979,64,0,8,1,11
+128,128,128,12,0.023577905,0.000497548,0.002780687,0.002904021,0.012912858,0.00156443,0.002637363,0.307454712367,0.547667742321,0.111857393606,128,0,8,1,12
+64,512,64,11,0.026265695,0.000507152,0.001312932,0.005345011,0.011043315,0.002763849,0.004796501,0.358710934548,0.420446327424,0.182614661443,256,0,8,2,22
+64,768,64,11,0.038836659,0.000749566,0.000658218,0.008116234,0.016901606,0.00422854,0.007424126,0.334812322553,0.435197219205,0.191162839213,256,1,8,3,33
 ```
 
 The profile records wall-clock time inside `gemm_with_plan`, so it includes the
@@ -148,8 +148,10 @@ residue GEMM, and CRT reconstruction are all large contributors. At
 B-side residue generation and residue storage grow visibly. CRT recovery now
 reads the residue block with a stride instead of copying per-output residues to
 a temporary vector first; this lowers the wider-case CRT cost, but it remains a
-material fraction. A-side residue panel caching is active in the `64x768x64`
-case and keeps A residue generation small.
+material fraction. Residue GEMM outputs are also cast directly to `int64_t`
+because the exact-modular bound makes them exact FP64 integers, avoiding a
+per-output `llround` call. A-side residue panel caching is active in the
+`64x768x64` case and keeps A residue generation small.
 
 ## Initial Read
 
@@ -201,7 +203,8 @@ Current implementation is intentionally simple:
 
 - residue matrices are rebuilt for every modulus, though inputs are decomposed
   once per call and plans cache `2^shift mod p` tables for wide-exponent cases,
-  and temporary output residues are now limited to a column block,
+  temporary output residues are now limited to a column block, and exact
+  residue GEMM outputs avoid libm rounding during residue storage,
 - A-side residue panels are cached adaptively for wider outputs, but B-side
   residue panels are still rebuilt per block and modulus,
 - CRT reconstruction is still scalar within each output element, though output

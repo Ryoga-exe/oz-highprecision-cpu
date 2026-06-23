@@ -133,6 +133,8 @@ To break reusable execution time down by phase:
 oz-highprecision-cpu/build/benchmark --profile 128 128 128
 ```
 
+The profile mode reports median phase timings for moderate output sizes.
+
 To run the same quick benchmark and block-size sweep across available BLAS
 backends:
 

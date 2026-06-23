@@ -237,7 +237,7 @@ void run_profile(int m, int n, int k) {
                                   options);
     const auto plan_end = steady_clock_t::now();
 
-    const int repeats = (m * n <= 16384) ? 3 : 1;
+    const int repeats = (m * n <= 65536) ? 3 : 1;
     std::vector<oz_hp_cpu::GemmExecutionStats> stats_samples;
     stats_samples.reserve(static_cast<std::size_t>(repeats));
     std::vector<hp_t> c(static_cast<std::size_t>(ldc) * n, hp_t(0));

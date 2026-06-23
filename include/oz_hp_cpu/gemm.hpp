@@ -1040,7 +1040,8 @@ inline void gemm_with_plan(const GemmPlan &plan,
                     const std::size_t idx =
                         static_cast<std::size_t>(row) +
                         static_cast<std::size_t>(local_col) * m;
-                    const auto rounded = static_cast<std::int64_t>(std::llround(c_mod[idx]));
+                    // The modulus bound makes every residue GEMM output an exact FP64 integer.
+                    const auto rounded = static_cast<std::int64_t>(c_mod[idx]);
                     all_residues[imod * block_output_size + idx] =
                         detail::centered_mod_i64(rounded, p);
                 }
