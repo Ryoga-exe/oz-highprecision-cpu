@@ -78,6 +78,22 @@ m,n,k,moduli,exact_required_bits,planned_bits,max_exact_modulus_bound,selected_m
 64,768,64,11,113,264,23726565,23726561,0.001511435,0.040968753,0.00088436,8,256,1,0.040509639,0.079773932,1.11972198,0,6.25928911874e-15,0
 ```
 
+Residue block-size sweep:
+
+```sh
+oz-highprecision-cpu/build/benchmark --sweep-blocks 64 512 64
+```
+
+```text
+m,n,k,requested_block,effective_block,a_residue_cached,moduli,exact_required_bits,planned_bits,plan_seconds,reuse_seconds,vs_auto_max_abs
+64,512,64,0,256,0,11,113,264,0.000611599,0.02757801,0
+64,512,64,32,32,1,11,113,264,0.000629869,0.053494286,0
+64,512,64,64,64,1,11,113,264,0.000575506,0.027715016,0
+64,512,64,128,128,1,11,113,264,0.000579423,0.026949108,0
+64,512,64,256,256,0,11,113,264,0.000576571,0.027101911,0
+64,512,64,512,512,0,11,113,264,0.000628058,0.026623022,0
+```
+
 `max_exact_modulus_bound` is the largest integer allowed by the exact FP64
 accumulation bound. It is not necessarily prime. `selected_max_modulus` is the
 largest prime modulus actually used.
@@ -100,6 +116,10 @@ largest prime modulus actually used.
   automatic selector uses a temporary-memory target and picks the full `n` for
   these default cases and 256 columns for the wider `64x512x64` and
   `64x768x64` cases.
+- The block-size sweep shows that the memory-budget selector is conservative:
+  with the system BLAS in this environment, `64x512x64` is fastest with a
+  larger explicit block, while the auto block remains close and bounds
+  temporary storage.
 - A-side residue panels are cached when the output spans more than two column
   blocks. That path is active in the `64x768x64` case above and avoids
   regenerating the same A residues for each block.

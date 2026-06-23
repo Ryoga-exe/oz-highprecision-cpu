@@ -128,12 +128,99 @@ std::vector<Case> parse_cases(int argc, char **argv) {
         }
         return {{std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]), true}};
     }
-    throw std::invalid_argument("usage: benchmark [--quick|--one M N K]");
+    throw std::invalid_argument("usage: benchmark [--quick|--one M N K|--sweep-blocks M N K]");
+}
+
+void run_block_sweep(int m, int n, int k) {
+    std::mt19937_64 rng(0x61282024);
+    oz_hp_cpu::Options base_options;
+    base_options.target_bits = 256;
+    base_options.guard_bits = 8;
+
+    const int lda = m;
+    const int ldb = k;
+    const int ldc = m;
+    std::vector<double> a = random_matrix(m, k, lda, rng);
+    std::vector<double> b = random_matrix(k, n, ldb, rng);
+
+    oz_hp_cpu::GemmPlan auto_plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb,
+                                  base_options);
+    std::vector<hp_t> c_auto(static_cast<std::size_t>(ldc) * n, hp_t(0));
+    oz_hp_cpu::gemm_with_plan(auto_plan,
+                              hp_t(1), a.data(), lda,
+                              b.data(), ldb,
+                              hp_t(0), c_auto.data(), ldc);
+
+    std::cout << "m,n,k,requested_block,effective_block,a_residue_cached,"
+              << "moduli,exact_required_bits,planned_bits,plan_seconds,"
+              << "reuse_seconds,vs_auto_max_abs\n";
+    std::cout << std::setprecision(12);
+
+    const int requested_blocks[] = {0, 32, 64, 128, 256, 512};
+    const int repeats = (m * n <= 4096) ? 3 : 1;
+    for (int requested_block : requested_blocks) {
+        if (requested_block > 0 && requested_block > n) {
+            continue;
+        }
+
+        oz_hp_cpu::Options options = base_options;
+        options.residue_col_block = requested_block;
+
+        const auto plan_begin = steady_clock_t::now();
+        oz_hp_cpu::GemmPlan plan =
+            oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                      oz_hp_cpu::Operation::NoTrans,
+                                      m, n, k,
+                                      a.data(), lda,
+                                      b.data(), ldb,
+                                      options);
+        const auto plan_end = steady_clock_t::now();
+
+        std::vector<hp_t> c(static_cast<std::size_t>(ldc) * n, hp_t(0));
+        std::vector<double> samples;
+        samples.reserve(static_cast<std::size_t>(repeats));
+        for (int repeat = 0; repeat < repeats; ++repeat) {
+            std::fill(c.begin(), c.end(), hp_t(0));
+            const auto begin = steady_clock_t::now();
+            oz_hp_cpu::gemm_with_plan(plan,
+                                      hp_t(1), a.data(), lda,
+                                      b.data(), ldb,
+                                      hp_t(0), c.data(), ldc);
+            const auto end = steady_clock_t::now();
+            samples.push_back(seconds_since(begin, end));
+        }
+
+        std::cout << m << ','
+                  << n << ','
+                  << k << ','
+                  << requested_block << ','
+                  << oz_hp_cpu::effective_residue_col_block(plan) << ','
+                  << (oz_hp_cpu::effective_a_residue_panel_cache(plan) ? 1 : 0) << ','
+                  << plan.crt.moduli.size() << ','
+                  << plan.crt.exact_required_bits << ','
+                  << plan.crt.planned_bits << ','
+                  << seconds_since(plan_begin, plan_end) << ','
+                  << median(samples) << ','
+                  << max_abs_diff_hp(c, c_auto) << '\n';
+    }
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
+    if (argc > 1 && std::string(argv[1]) == "--sweep-blocks") {
+        if (argc != 5) {
+            throw std::invalid_argument("usage: benchmark --sweep-blocks M N K");
+        }
+        run_block_sweep(std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]));
+        return 0;
+    }
+
     const std::vector<Case> cases = parse_cases(argc, argv);
     std::mt19937_64 rng(0x61282024);
 

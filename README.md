@@ -112,6 +112,12 @@ make -C oz-highprecision-cpu build/benchmark
 oz-highprecision-cpu/build/benchmark
 ```
 
+To compare residue column block sizes on one shape:
+
+```sh
+oz-highprecision-cpu/build/benchmark --sweep-blocks 64 512 64
+```
+
 The `max_exact_modulus_bound` column is the exact-FP64-accumulation upper bound
 for a modulus; it is not necessarily prime. The actual largest selected prime
 modulus is reported separately as `selected_max_modulus`.
