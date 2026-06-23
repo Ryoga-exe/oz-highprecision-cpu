@@ -20,5 +20,6 @@ for backend in "${backends[@]}"; do
     make blas-info BLAS_BACKEND="${backend}"
     build/benchmark --quick
     build/benchmark --sweep-blocks 64 512 64
+    build/benchmark --sweep-crt-threads 64 512 64
     echo
 done

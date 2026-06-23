@@ -26,8 +26,9 @@ make -C oz-highprecision-cpu bench BLAS_BACKEND=mkl
 make -C oz-highprecision-cpu bench BLAS_BACKEND=custom BLAS_LIBS="-L/path -lblas"
 ```
 
-The helper script runs the quick benchmark and residue-block sweep for each
-requested backend, skipping backends that fail to link:
+The helper script runs the quick benchmark, residue-block sweep, and CRT
+thread-count sweep for each requested backend, skipping backends that fail to
+link:
 
 ```sh
 oz-highprecision-cpu/scripts/evaluate_blas.sh auto system openblas blis mkl
@@ -122,6 +123,35 @@ m,n,k,requested_block,effective_block,a_residue_cached,moduli,exact_required_bit
 `max_exact_modulus_bound` is the largest integer allowed by the exact FP64
 accumulation bound. It is not necessarily prime. `selected_max_modulus` is the
 largest prime modulus actually used.
+
+CRT thread-count sweep:
+
+```sh
+oz-highprecision-cpu/build/benchmark --sweep-crt-threads 64 512 64
+```
+
+```text
+m,n,k,requested_threads,effective_threads,moduli,residue_col_block,a_residue_cached,total_seconds,crt_seconds,crt_fraction,vs_auto_max_abs
+64,64,64,0,8,11,64,0,0.004535071,0.001208217,0.26641633615,0
+64,64,64,1,1,11,64,0,0.007325222,0.004034307,0.550741943384,0
+64,64,64,2,2,11,64,0,0.005270516,0.002057565,0.390391566974,0
+64,64,64,4,4,11,64,0,0.004226911,0.00109291,0.258559974412,0
+64,64,64,8,8,11,64,0,0.004505445,0.001195179,0.265274351368,0
+128,128,128,0,8,12,128,0,0.026373674,0.005114883,0.193938963529,0
+128,128,128,1,1,12,128,0,0.03857284,0.017846608,0.462672906636,0
+128,128,128,2,2,12,128,0,0.028474044,0.008726547,0.306473748513,0
+128,128,128,4,4,12,128,0,0.024511869,0.00448966,0.18316269559,0
+128,128,128,8,8,12,128,0,0.024941703,0.004688296,0.187970163866,0
+64,512,64,0,8,11,256,0,0.030453364,0.008618837,0.283017567452,0
+64,512,64,1,1,11,256,0,0.052133735,0.031159803,0.597689825983,0
+64,512,64,2,2,11,256,0,0.037504114,0.016172954,0.431231464367,0
+64,512,64,4,4,11,256,0,0.028526649,0.008059349,0.282520004365,0
+64,512,64,8,8,11,256,0,0.026108029,0.004599818,0.176184039017,0
+```
+
+On this 8-core machine, serial CRT is consistently much slower for these
+medium shapes. Four threads are best in the `64x64x64` and `128x128x128`
+runs above, while eight threads are best for `64x512x64`.
 
 ## Phase Profile
 

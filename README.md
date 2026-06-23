@@ -127,6 +127,12 @@ To compare residue column block sizes on one shape:
 oz-highprecision-cpu/build/benchmark --sweep-blocks 64 512 64
 ```
 
+To compare CRT reconstruction thread counts:
+
+```sh
+oz-highprecision-cpu/build/benchmark --sweep-crt-threads 64 512 64
+```
+
 To break reusable execution time down by phase:
 
 ```sh
@@ -135,8 +141,8 @@ oz-highprecision-cpu/build/benchmark --profile 128 128 128
 
 The profile mode reports median phase timings for moderate output sizes.
 
-To run the same quick benchmark and block-size sweep across available BLAS
-backends:
+To run the same quick benchmark, block-size sweep, and CRT thread-count sweep
+across available BLAS backends:
 
 ```sh
 oz-highprecision-cpu/scripts/evaluate_blas.sh
