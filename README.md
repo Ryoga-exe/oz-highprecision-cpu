@@ -50,6 +50,10 @@ producing a wrong result.
 `0` selects an automatic thread count for medium and larger outputs, while `1`
 forces serial reconstruction.
 
+`Options::crt_auto_max_threads` caps the automatic CRT thread count when
+`crt_threads == 0`. The default `0` leaves the automatic count uncapped.
+Explicit `crt_threads` values are not capped.
+
 `Options::residue_col_block` controls the output-column block size used while
 building residue GEMM outputs and reconstructing CRT results. The default `0`
 uses an automatic block size. `Options::residue_target_bytes` controls the
@@ -132,6 +136,9 @@ To compare CRT reconstruction thread counts:
 ```sh
 oz-highprecision-cpu/build/benchmark --sweep-crt-threads 64 512 64
 ```
+
+The CRT sweep includes uncapped automatic threading and a capped-auto row using
+`Options::crt_auto_max_threads = 4`.
 
 To compare precision targets:
 

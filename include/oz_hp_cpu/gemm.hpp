@@ -57,6 +57,8 @@ struct Options {
     int zero_vector_max_scaled_bits = 0;
     // 0 selects an automatic thread count; 1 forces serial CRT recovery.
     int crt_threads = 0;
+    // 0 leaves automatic CRT threading uncapped.
+    int crt_auto_max_threads = 0;
     // 0 selects an automatic column block size for residue GEMM/CRT.
     int residue_col_block = 0;
     // Target temporary bytes for automatic residue column block sizing.
@@ -111,6 +113,7 @@ struct GemmPlan {
     int max_pow2_shift = 0;
     std::vector<std::vector<int>> pow2_residues;
     int crt_threads = 0;
+    int crt_auto_max_threads = 0;
     int residue_col_block = 0;
     int residue_target_bytes = 8 * 1024 * 1024;
 };
@@ -171,6 +174,9 @@ inline void validate_options(const Options &options) {
     }
     if (options.crt_threads < 0) {
         throw std::invalid_argument("crt_threads must be >= 0");
+    }
+    if (options.crt_auto_max_threads < 0) {
+        throw std::invalid_argument("crt_auto_max_threads must be >= 0");
     }
     if (options.residue_col_block < 0) {
         throw std::invalid_argument("residue_col_block must be >= 0");
@@ -673,6 +679,9 @@ inline void validate_gemm_plan(const GemmPlan &plan,
     if (plan.crt_threads < 0) {
         throw std::invalid_argument("GemmPlan has invalid CRT thread count");
     }
+    if (plan.crt_auto_max_threads < 0) {
+        throw std::invalid_argument("GemmPlan has invalid CRT auto thread cap");
+    }
     if (plan.residue_col_block < 0) {
         throw std::invalid_argument("GemmPlan has invalid residue column block size");
     }
@@ -686,7 +695,9 @@ inline void validate_gemm_plan(const GemmPlan &plan,
     }
 }
 
-inline int choose_crt_threads(std::size_t output_size, int requested_threads) {
+inline int choose_crt_threads(std::size_t output_size,
+                              int requested_threads,
+                              int auto_max_threads = 0) {
     if (output_size < 4096) {
         return 1;
     }
@@ -695,6 +706,9 @@ inline int choose_crt_threads(std::size_t output_size, int requested_threads) {
     if (threads == 0) {
         const unsigned hw = std::thread::hardware_concurrency();
         threads = (hw == 0) ? 1 : static_cast<int>(hw);
+        if (auto_max_threads > 0) {
+            threads = std::min(threads, auto_max_threads);
+        }
     }
     threads = std::max(1, threads);
     threads = std::min<std::size_t>(static_cast<std::size_t>(threads), output_size);
@@ -782,6 +796,7 @@ inline GemmPlan make_gemm_plan(Operation op_a, Operation op_b,
     plan.n = n;
     plan.k = k;
     plan.crt_threads = options.crt_threads;
+    plan.crt_auto_max_threads = options.crt_auto_max_threads;
     plan.residue_col_block = options.residue_col_block;
     plan.residue_target_bytes = options.residue_target_bytes;
     plan.row_scale_exp.resize(static_cast<std::size_t>(m));
@@ -845,7 +860,8 @@ inline int effective_crt_threads(const GemmPlan &plan) {
                                          plan.residue_col_block,
                                          plan.residue_target_bytes);
     return detail::choose_crt_threads(static_cast<std::size_t>(plan.m) * col_block,
-                                      plan.crt_threads);
+                                      plan.crt_threads,
+                                      plan.crt_auto_max_threads);
 }
 
 inline int effective_residue_col_block(const GemmPlan &plan) {
@@ -1053,7 +1069,9 @@ inline void gemm_with_plan(const GemmPlan &plan,
         }
 
         const int crt_threads =
-            detail::choose_crt_threads(block_output_size, plan.crt_threads);
+            detail::choose_crt_threads(block_output_size,
+                                       plan.crt_threads,
+                                       plan.crt_auto_max_threads);
         if (stats != nullptr) {
             stats->crt_threads = std::max(stats->crt_threads, crt_threads);
         }

@@ -241,16 +241,21 @@ void run_crt_thread_sweep(int m, int n, int k) {
                               b.data(), ldb,
                               hp_t(0), c_auto.data(), ldc);
 
-    std::cout << "m,n,k,requested_threads,effective_threads,moduli,"
+    std::cout << "m,n,k,requested_threads,auto_max_threads,effective_threads,moduli,"
               << "residue_col_block,a_residue_cached,total_seconds,crt_seconds,"
               << "crt_fraction,vs_auto_max_abs\n";
     std::cout << std::setprecision(12);
 
-    const int requested_threads[] = {0, 1, 2, 4, 8};
+    struct ThreadCase {
+        int requested_threads;
+        int auto_max_threads;
+    };
+    const ThreadCase thread_cases[] = {{0, 0}, {0, 4}, {1, 0}, {2, 0}, {4, 0}, {8, 0}};
     const int repeats = (m * n <= 65536) ? 3 : 1;
-    for (int requested_thread : requested_threads) {
+    for (const ThreadCase &thread_case : thread_cases) {
         oz_hp_cpu::Options options = base_options;
-        options.crt_threads = requested_thread;
+        options.crt_threads = thread_case.requested_threads;
+        options.crt_auto_max_threads = thread_case.auto_max_threads;
         oz_hp_cpu::GemmPlan plan =
             oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
                                       oz_hp_cpu::Operation::NoTrans,
@@ -289,7 +294,8 @@ void run_crt_thread_sweep(int m, int n, int k) {
         std::cout << m << ','
                   << n << ','
                   << k << ','
-                  << requested_thread << ','
+                  << thread_case.requested_threads << ','
+                  << thread_case.auto_max_threads << ','
                   << last.crt_threads << ','
                   << plan.crt.moduli.size() << ','
                   << last.residue_col_block << ','

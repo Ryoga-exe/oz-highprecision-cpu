@@ -514,6 +514,47 @@ void run_residue_block_sizing_case(std::mt19937_64 &rng) {
               << oz_hp_cpu::effective_residue_col_block(small_budget_plan) << '\n';
 }
 
+void run_crt_auto_thread_sizing_case(std::mt19937_64 &rng) {
+    constexpr int m = 64;
+    constexpr int n = 64;
+    constexpr int k = 1;
+    constexpr int lda = m;
+    constexpr int ldb = k;
+
+    std::vector<double> a = random_matrix(m, k, lda, rng);
+    std::vector<double> b = random_matrix(k, n, ldb, rng);
+
+    oz_hp_cpu::Options capped_auto;
+    capped_auto.crt_auto_max_threads = 4;
+    oz_hp_cpu::GemmPlan auto_plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb,
+                                  capped_auto);
+    const int auto_threads = oz_hp_cpu::effective_crt_threads(auto_plan);
+    if (auto_threads < 1 || auto_threads > 4) {
+        throw std::runtime_error("auto CRT thread cap was not applied");
+    }
+
+    oz_hp_cpu::Options explicit_threads;
+    explicit_threads.crt_threads = 8;
+    oz_hp_cpu::GemmPlan explicit_plan =
+        oz_hp_cpu::make_gemm_plan(oz_hp_cpu::Operation::NoTrans,
+                                  oz_hp_cpu::Operation::NoTrans,
+                                  m, n, k,
+                                  a.data(), lda,
+                                  b.data(), ldb,
+                                  explicit_threads);
+    if (oz_hp_cpu::effective_crt_threads(explicit_plan) != 8) {
+        throw std::runtime_error("explicit CRT thread sizing was not preserved");
+    }
+
+    std::cout << "crt auto thread sizing ok: auto=" << auto_threads
+              << " explicit=" << oz_hp_cpu::effective_crt_threads(explicit_plan) << '\n';
+}
+
 } // namespace
 
 int main() {
@@ -528,6 +569,7 @@ int main() {
     run_parallel_crt_case(rng);
     run_blocked_residue_case(rng);
     run_residue_block_sizing_case(rng);
+    run_crt_auto_thread_sizing_case(rng);
     run_random_case("nn", oz_hp_cpu::Operation::NoTrans,
                     oz_hp_cpu::Operation::NoTrans, 5, 4, 7, rng);
     run_random_case("tn", oz_hp_cpu::Operation::Trans,
