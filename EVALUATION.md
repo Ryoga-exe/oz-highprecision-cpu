@@ -36,6 +36,13 @@ under `results/<UTC timestamp>/<backend>/` unless `OZ_EVAL_RUN_ID` or
 oz-highprecision-cpu/scripts/evaluate_blas.sh auto system openblas blis mkl
 ```
 
+Saved runs can be summarized with:
+
+```sh
+oz-highprecision-cpu/scripts/summarize_results.py oz-highprecision-cpu/results
+oz-highprecision-cpu/scripts/summarize_results.py oz-highprecision-cpu/results/<run-id> --csv-dir /tmp/oz-summary
+```
+
 On this machine, both `auto` and `system` resolve to
 `/lib/x86_64-linux-gnu/libblas.so.3`. OpenBLAS/BLIS/MKL should be evaluated on
 a machine where those libraries are installed.

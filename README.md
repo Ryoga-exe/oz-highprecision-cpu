@@ -171,6 +171,13 @@ OZ_EVAL_RUN_ID=openblas-test oz-highprecision-cpu/scripts/evaluate_blas.sh auto
 OZ_EVAL_RESULTS_DIR=/tmp/oz-results oz-highprecision-cpu/scripts/evaluate_blas.sh auto
 ```
 
+Summarize saved result directories:
+
+```sh
+oz-highprecision-cpu/scripts/summarize_results.py oz-highprecision-cpu/results
+oz-highprecision-cpu/scripts/summarize_results.py oz-highprecision-cpu/results/openblas-test --csv-dir /tmp/oz-summary
+```
+
 The `max_exact_modulus_bound` column is the exact-FP64-accumulation upper bound
 for a modulus; it is not necessarily prime. The actual largest selected prime
 modulus is reported separately as `selected_max_modulus`.
