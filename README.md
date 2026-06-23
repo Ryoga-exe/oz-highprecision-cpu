@@ -94,12 +94,21 @@ make -C oz-highprecision-cpu example
 make -C oz-highprecision-cpu bench
 ```
 
-To force a BLAS library:
+To force a BLAS backend:
 
 ```sh
-make -C oz-highprecision-cpu test BLAS_LIBS="-lopenblas"
-make -C oz-highprecision-cpu test BLAS_LIBS="-lblas"
+make -C oz-highprecision-cpu test BLAS_BACKEND=auto
+make -C oz-highprecision-cpu test BLAS_BACKEND=system
+make -C oz-highprecision-cpu test BLAS_BACKEND=openblas
+make -C oz-highprecision-cpu test BLAS_BACKEND=blis
+make -C oz-highprecision-cpu test BLAS_BACKEND=mkl
+make -C oz-highprecision-cpu test BLAS_BACKEND=custom BLAS_LIBS="-L/path -lblas"
+make -C oz-highprecision-cpu blas-info BLAS_BACKEND=openblas
 ```
+
+`BLAS_BACKEND=auto` prefers OpenBLAS when it is visible through `ldconfig`,
+then falls back to system BLAS. `openblas` and `blis` use `pkg-config` when
+available and otherwise try `-lopenblas` / `-lblis`; `mkl` uses `-lmkl_rt`.
 
 The benchmark target runs `build/benchmark --quick` and prints CSV columns for
 FP64 BLAS time, one-shot modular/CRT time, plan construction time, reusable-plan
@@ -116,6 +125,14 @@ To compare residue column block sizes on one shape:
 
 ```sh
 oz-highprecision-cpu/build/benchmark --sweep-blocks 64 512 64
+```
+
+To run the same quick benchmark and block-size sweep across available BLAS
+backends:
+
+```sh
+oz-highprecision-cpu/scripts/evaluate_blas.sh
+oz-highprecision-cpu/scripts/evaluate_blas.sh auto openblas blis mkl
 ```
 
 The `max_exact_modulus_bound` column is the exact-FP64-accumulation upper bound

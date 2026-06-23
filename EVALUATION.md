@@ -9,8 +9,33 @@ Environment:
 - Compiler: `g++ 13.3.0`
 - Build flags: `-O2 -std=c++17`
 
-This is an early PoC measurement. The system did not expose OpenBLAS through
-`ldconfig`, so the BLAS numbers below are from the default system BLAS.
+This is an early PoC measurement. The system did not expose OpenBLAS, BLIS, or
+MKL through `ldconfig`/`pkg-config`, so the BLAS numbers below are from the
+default system BLAS.
+
+## BLAS Backend Selection
+
+The Makefile supports:
+
+```sh
+make -C oz-highprecision-cpu bench BLAS_BACKEND=auto
+make -C oz-highprecision-cpu bench BLAS_BACKEND=system
+make -C oz-highprecision-cpu bench BLAS_BACKEND=openblas
+make -C oz-highprecision-cpu bench BLAS_BACKEND=blis
+make -C oz-highprecision-cpu bench BLAS_BACKEND=mkl
+make -C oz-highprecision-cpu bench BLAS_BACKEND=custom BLAS_LIBS="-L/path -lblas"
+```
+
+The helper script runs the quick benchmark and residue-block sweep for each
+requested backend, skipping backends that fail to link:
+
+```sh
+oz-highprecision-cpu/scripts/evaluate_blas.sh auto system openblas blis mkl
+```
+
+On this machine, both `auto` and `system` resolve to
+`/lib/x86_64-linux-gnu/libblas.so.3`. OpenBLAS/BLIS/MKL should be evaluated on
+a machine where those libraries are installed.
 
 ## Correctness
 
