@@ -28,7 +28,9 @@ make -C oz-highprecision-cpu bench BLAS_BACKEND=custom BLAS_LIBS="-L/path -lblas
 
 The helper script runs the quick benchmark, residue-block sweep, CRT
 thread-count sweep, and precision sweep for each requested backend, skipping
-backends that fail to link:
+backends that fail to link. It mirrors output to stdout and saves artifacts
+under `results/<UTC timestamp>/<backend>/` unless `OZ_EVAL_RUN_ID` or
+`OZ_EVAL_RESULTS_DIR` is set:
 
 ```sh
 oz-highprecision-cpu/scripts/evaluate_blas.sh auto system openblas blis mkl

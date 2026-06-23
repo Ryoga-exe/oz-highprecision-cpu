@@ -162,6 +162,15 @@ oz-highprecision-cpu/scripts/evaluate_blas.sh
 oz-highprecision-cpu/scripts/evaluate_blas.sh auto openblas blis mkl
 ```
 
+The helper mirrors output to stdout and writes CSV/text artifacts under
+`results/<UTC timestamp>/<backend>/`. Set `OZ_EVAL_RUN_ID` or
+`OZ_EVAL_RESULTS_DIR` to choose a stable output path:
+
+```sh
+OZ_EVAL_RUN_ID=openblas-test oz-highprecision-cpu/scripts/evaluate_blas.sh auto
+OZ_EVAL_RESULTS_DIR=/tmp/oz-results oz-highprecision-cpu/scripts/evaluate_blas.sh auto
+```
+
 The `max_exact_modulus_bound` column is the exact-FP64-accumulation upper bound
 for a modulus; it is not necessarily prime. The actual largest selected prime
 modulus is reported separately as `selected_max_modulus`.
