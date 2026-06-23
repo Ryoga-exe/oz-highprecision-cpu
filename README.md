@@ -127,6 +127,12 @@ To compare residue column block sizes on one shape:
 oz-highprecision-cpu/build/benchmark --sweep-blocks 64 512 64
 ```
 
+To break reusable execution time down by phase:
+
+```sh
+oz-highprecision-cpu/build/benchmark --profile 128 128 128
+```
+
 To run the same quick benchmark and block-size sweep across available BLAS
 backends:
 

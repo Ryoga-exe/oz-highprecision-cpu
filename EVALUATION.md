@@ -123,6 +123,32 @@ m,n,k,requested_block,effective_block,a_residue_cached,moduli,exact_required_bit
 accumulation bound. It is not necessarily prime. `selected_max_modulus` is the
 largest prime modulus actually used.
 
+## Phase Profile
+
+Command:
+
+```sh
+oz-highprecision-cpu/build/benchmark --profile M N K
+```
+
+Representative reusable-plan phase breakdowns:
+
+```text
+m,n,k,moduli,total_seconds,input_prepare_seconds,a_residue_seconds,b_residue_seconds,blas_seconds,residue_store_seconds,crt_seconds,residue_fraction,blas_fraction,crt_fraction,residue_col_block,a_residue_cached,crt_threads,output_blocks,residue_gemm_calls
+64,64,64,11,0.004787368,0.000128093,0.000644242,0.000600334,0.001447885,0.000488264,0.00135824,0.361960893752,0.302438625984,0.283713305516,64,0,8,1,11
+128,128,128,12,0.025004442,0.000495116,0.002908659,0.002676883,0.013176399,0.002073361,0.002915966,0.306301696315,0.526962329333,0.116617919328,128,0,8,1,12
+64,512,64,11,0.032896799,0.000553524,0.001294625,0.00501809,0.01132656,0.004119911,0.009975512,0.317131949525,0.344305839605,0.303236555022,256,0,8,2,22
+64,768,64,11,0.043246764,0.000872715,0.000728332,0.007888262,0.018532621,0.00640276,0.007947694,0.347294285418,0.428531970623,0.183775461211,256,1,8,3,33
+```
+
+The profile records wall-clock time inside `gemm_with_plan`, so it includes the
+currently linked system BLAS. At `64x64x64`, residue generation/storage,
+residue GEMM, and CRT reconstruction are all large contributors. At
+`128x128x128`, the BLAS calls dominate this system-BLAS run. For wider `n`,
+B-side residue generation and residue storage grow visibly; A-side residue
+panel caching is active in the `64x768x64` case and keeps A residue generation
+small.
+
 ## Initial Read
 
 - The modular/CRT PoC exactly matches the naive Boost `cpp_bin_float<256>`
@@ -160,6 +186,10 @@ largest prime modulus actually used.
 - Reusable plans separate input scale/CRT setup from execution. For these
   random matrices, planning is small compared with modular GEMM and CRT at
   medium sizes. Reuse output exactly matches one-shot output in these tests.
+- Phase profiling is now available through `benchmark --profile M N K`.
+  Current system-BLAS measurements show that tuned BLAS should help most at
+  larger square shapes, while wide-output cases still need residue/CRT-side
+  work.
 - It is still far slower than ordinary FP64 BLAS, as expected. The point of the
   PoC is high-precision accumulation, not competing with FP64 accuracy/perf.
 
@@ -181,6 +211,11 @@ Current implementation is intentionally simple:
   than empirical tuning for the active BLAS backend,
 - the BLAS backend here is system BLAS, not OpenBLAS/MKL/BLIS.
 
-The next performance work should focus on application-level reuse policies,
-empirical block-size tuning against tuned BLAS libraries, and switching from
-the system BLAS to a tuned OpenBLAS/MKL/BLIS build.
+The next performance work should focus on:
+
+- evaluating the same profile with tuned OpenBLAS/MKL/BLIS,
+- reducing B-side residue rebuild cost for repeated or wide-output workloads,
+- optimizing CRT reconstruction and residue storage, which remain material at
+  `64x64x64` and wide-output cases,
+- replacing the simple memory-budget block-size heuristic with empirical
+  backend-aware tuning.

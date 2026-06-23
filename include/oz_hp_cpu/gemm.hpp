@@ -4,6 +4,7 @@
 #include <boost/multiprecision/cpp_int.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -112,6 +113,22 @@ struct GemmPlan {
     int crt_threads = 0;
     int residue_col_block = 0;
     int residue_target_bytes = 8 * 1024 * 1024;
+};
+
+struct GemmExecutionStats {
+    double total_seconds = 0.0;
+    double input_prepare_seconds = 0.0;
+    double a_residue_seconds = 0.0;
+    double b_residue_seconds = 0.0;
+    double blas_seconds = 0.0;
+    double residue_store_seconds = 0.0;
+    double crt_seconds = 0.0;
+    int residue_col_block = 0;
+    int crt_threads = 0;
+    int residue_gemm_calls = 0;
+    std::size_t output_blocks = 0;
+    std::size_t moduli = 0;
+    bool a_residue_cached = false;
 };
 
 namespace detail {
@@ -716,6 +733,11 @@ inline bool should_cache_a_residue_panels(int n, int col_block) {
     return col_block > 0 && n > 2 * col_block;
 }
 
+inline double elapsed_seconds(std::chrono::steady_clock::time_point begin,
+                              std::chrono::steady_clock::time_point end) {
+    return std::chrono::duration<double>(end - begin).count();
+}
+
 template <typename HighPrec>
 inline HighPrec scale_cpp_int_pow2(const cpp_int &value, int exponent) {
     using boost::multiprecision::ldexp;
@@ -839,7 +861,14 @@ inline void gemm_with_plan(const GemmPlan &plan,
                            const double *a, int lda,
                            const double *b, int ldb,
                            const HighPrec &beta,
-                           HighPrec *c, int ldc) {
+                           HighPrec *c, int ldc,
+                           GemmExecutionStats *stats = nullptr) {
+    const auto total_begin = std::chrono::steady_clock::now();
+    if (stats != nullptr) {
+        *stats = GemmExecutionStats{};
+        stats->moduli = plan.crt.moduli.size();
+    }
+
     const Operation op_a = plan.op_a;
     const Operation op_b = plan.op_b;
     const int m = plan.m;
@@ -856,6 +885,10 @@ inline void gemm_with_plan(const GemmPlan &plan,
     }
 
     if (m == 0 || n == 0) {
+        if (stats != nullptr) {
+            stats->total_seconds =
+                detail::elapsed_seconds(total_begin, std::chrono::steady_clock::now());
+        }
         return;
     }
     if (k == 0) {
@@ -863,6 +896,10 @@ inline void gemm_with_plan(const GemmPlan &plan,
             for (int row = 0; row < m; ++row) {
                 c[row + col * ldc] *= beta;
             }
+        }
+        if (stats != nullptr) {
+            stats->total_seconds =
+                detail::elapsed_seconds(total_begin, std::chrono::steady_clock::now());
         }
         return;
     }
@@ -876,12 +913,17 @@ inline void gemm_with_plan(const GemmPlan &plan,
                                          plan.residue_target_bytes);
     const bool cache_a_residue_panels =
         detail::should_cache_a_residue_panels(n, residue_col_block);
+    if (stats != nullptr) {
+        stats->residue_col_block = residue_col_block;
+        stats->a_residue_cached = cache_a_residue_panels;
+    }
     std::vector<double> a_mod_scratch(static_cast<std::size_t>(m) * k);
     std::vector<double> b_mod(static_cast<std::size_t>(k) * residue_col_block);
     std::vector<double> c_mod(static_cast<std::size_t>(m) * residue_col_block);
     std::vector<detail::ScaledDouble> a_scaled(static_cast<std::size_t>(m) * k);
     std::vector<detail::ScaledDouble> b_scaled(static_cast<std::size_t>(k) * n);
 
+    const auto input_prepare_begin = std::chrono::steady_clock::now();
     for (int col = 0; col < k; ++col) {
         for (int row = 0; row < m; ++row) {
             const double value = detail::read_a(op_a, a, lda, row, col);
@@ -898,6 +940,10 @@ inline void gemm_with_plan(const GemmPlan &plan,
                 detail::prepare_scaled_double_checked(
                     value, plan.col_scale_exp[col], plan.col_max_scaled_bits[col]);
         }
+    }
+    if (stats != nullptr) {
+        stats->input_prepare_seconds +=
+            detail::elapsed_seconds(input_prepare_begin, std::chrono::steady_clock::now());
     }
 
     auto build_a_mod_panel = [&](std::size_t imod, double *a_mod) {
@@ -918,9 +964,14 @@ inline void gemm_with_plan(const GemmPlan &plan,
     std::vector<double> a_mod_panels;
     if (cache_a_residue_panels) {
         a_mod_panels.resize(plan.crt.moduli.size() * static_cast<std::size_t>(m) * k);
+        const auto a_begin = std::chrono::steady_clock::now();
         for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
             build_a_mod_panel(
                 imod, a_mod_panels.data() + imod * static_cast<std::size_t>(m) * k);
+        }
+        if (stats != nullptr) {
+            stats->a_residue_seconds +=
+                detail::elapsed_seconds(a_begin, std::chrono::steady_clock::now());
         }
     }
 
@@ -929,6 +980,9 @@ inline void gemm_with_plan(const GemmPlan &plan,
     for (int col_begin = 0; col_begin < n; col_begin += residue_col_block) {
         const int nb = std::min(residue_col_block, n - col_begin);
         const std::size_t block_output_size = static_cast<std::size_t>(m) * nb;
+        if (stats != nullptr) {
+            ++stats->output_blocks;
+        }
 
         for (std::size_t imod = 0; imod < plan.crt.moduli.size(); ++imod) {
             const int p = plan.crt.moduli[imod];
@@ -937,10 +991,16 @@ inline void gemm_with_plan(const GemmPlan &plan,
             if (cache_a_residue_panels) {
                 a_mod = a_mod_panels.data() + imod * static_cast<std::size_t>(m) * k;
             } else {
+                const auto a_begin = std::chrono::steady_clock::now();
                 build_a_mod_panel(imod, a_mod_scratch.data());
+                if (stats != nullptr) {
+                    stats->a_residue_seconds +=
+                        detail::elapsed_seconds(a_begin, std::chrono::steady_clock::now());
+                }
                 a_mod = a_mod_scratch.data();
             }
 
+            const auto b_begin = std::chrono::steady_clock::now();
             for (int local_col = 0; local_col < nb; ++local_col) {
                 const int global_col = col_begin + local_col;
                 for (int row = 0; row < k; ++row) {
@@ -952,12 +1012,23 @@ inline void gemm_with_plan(const GemmPlan &plan,
                             pow2_mod));
                 }
             }
+            if (stats != nullptr) {
+                stats->b_residue_seconds +=
+                    detail::elapsed_seconds(b_begin, std::chrono::steady_clock::now());
+            }
 
+            const auto blas_begin = std::chrono::steady_clock::now();
             detail::blas_dgemm_nn(m, nb, k,
                                   a_mod, m,
                                   b_mod.data(), k,
                                   c_mod.data(), m);
+            if (stats != nullptr) {
+                stats->blas_seconds +=
+                    detail::elapsed_seconds(blas_begin, std::chrono::steady_clock::now());
+                ++stats->residue_gemm_calls;
+            }
 
+            const auto store_begin = std::chrono::steady_clock::now();
             for (int local_col = 0; local_col < nb; ++local_col) {
                 for (int row = 0; row < m; ++row) {
                     const std::size_t idx =
@@ -968,10 +1039,17 @@ inline void gemm_with_plan(const GemmPlan &plan,
                         detail::centered_mod_i64(rounded, p);
                 }
             }
+            if (stats != nullptr) {
+                stats->residue_store_seconds +=
+                    detail::elapsed_seconds(store_begin, std::chrono::steady_clock::now());
+            }
         }
 
         const int crt_threads =
             detail::choose_crt_threads(block_output_size, plan.crt_threads);
+        if (stats != nullptr) {
+            stats->crt_threads = std::max(stats->crt_threads, crt_threads);
+        }
         auto reconstruct_range = [&](std::size_t begin, std::size_t end) {
             std::vector<int> thread_residues(plan.crt.moduli.size());
             for (std::size_t idx = begin; idx < end; ++idx) {
@@ -994,6 +1072,7 @@ inline void gemm_with_plan(const GemmPlan &plan,
             }
         };
 
+        const auto crt_begin = std::chrono::steady_clock::now();
         if (crt_threads == 1) {
             reconstruct_range(0, block_output_size);
         } else {
@@ -1014,6 +1093,14 @@ inline void gemm_with_plan(const GemmPlan &plan,
                 worker.join();
             }
         }
+        if (stats != nullptr) {
+            stats->crt_seconds +=
+                detail::elapsed_seconds(crt_begin, std::chrono::steady_clock::now());
+        }
+    }
+    if (stats != nullptr) {
+        stats->total_seconds =
+            detail::elapsed_seconds(total_begin, std::chrono::steady_clock::now());
     }
 }
 
@@ -1026,13 +1113,14 @@ inline void gemm(Operation op_a, Operation op_b,
                  const HighPrec &beta,
                  HighPrec *c, int ldc,
                  const Options &options = Options{},
-                 Plan *plan_out = nullptr) {
+                 Plan *plan_out = nullptr,
+                 GemmExecutionStats *stats = nullptr) {
     detail::validate_options(options);
     GemmPlan plan = make_gemm_plan(op_a, op_b, m, n, k, a, lda, b, ldb, options);
     if (plan_out != nullptr) {
         *plan_out = plan.crt;
     }
-    gemm_with_plan(plan, alpha, a, lda, b, ldb, beta, c, ldc);
+    gemm_with_plan(plan, alpha, a, lda, b, ldb, beta, c, ldc, stats);
 }
 
 template <typename HighPrec>
